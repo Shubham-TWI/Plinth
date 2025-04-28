@@ -1,32 +1,41 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Forms for configuring unattended-upgrades.
 """
 
 from django import forms
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
+
+from plinth.modules import upgrades
 
 
 class ConfigureForm(forms.Form):
     """Configuration form to enable/disable automatic upgrades."""
     auto_upgrades_enabled = forms.BooleanField(
-        label=_('Enable automatic upgrades'), required=False,
-        help_text=_('When enabled, the unattended-upgrades program will be run '
-                    'once per day. It will attempt to perform any package '
-                    'upgrades that are available.'))
+        label=_('Enable auto-update'), required=False, help_text=_(
+            'When enabled, FreedomBox automatically updates once a day.'))
+
+    dist_upgrade_enabled = forms.BooleanField(
+        label=_('Enable auto-update to next stable release'), required=False,
+        help_text=_('When enabled, FreedomBox will update to the next stable '
+                    'distribution release when it is available.'))
+
+    def __init__(self, *args, **kwargs):
+        """Disable options as necessary."""
+        super().__init__(*args, **kwargs)
+
+        self.fields['dist_upgrade_enabled'].disabled = \
+            not upgrades.can_enable_dist_upgrade()
+
+
+class BackportsFirstbootForm(forms.Form):
+    """Form to configure backports during first boot wizard."""
+    backports_enabled = forms.BooleanField(
+        label=_('Activate frequent feature updates (recommended)'),
+        required=False, initial=True)
+
+
+class UpdateFirstbootForm(forms.Form):
+    """Form to run or skip initial update during first boot wizard."""
+    update_now = forms.BooleanField(label=_('Update now (recommended)'),
+                                    required=False, initial=True)

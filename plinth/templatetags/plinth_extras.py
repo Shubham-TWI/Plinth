@@ -1,21 +1,7 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
 import os
+from urllib.parse import urlparse
 
 from django import template
 
@@ -67,3 +53,30 @@ def show_subsubmenu(context, menu):
 def clients_of_type(clients, client_type):
     """Filter and get clients of a particular type"""
     return clients_module.of_type(clients, client_type)
+
+
+@register.filter(name='lookup')
+def lookup(dictionary, key):
+    """Get the value in the dictionary at given key"""
+    return dictionary[key]
+
+
+def _is_relative_url(url):
+    """Check if the given link is relative or not."""
+    parsed_url = urlparse(str(url))
+    return not parsed_url.netloc
+
+
+@register.filter(name='clients_get_platforms')
+def clients_get_platforms(clients):
+    """Return lists of self hosted platforms and all other platforms."""
+    other = []
+    web = []
+    for client in clients:
+        for platform in client['platforms']:
+            if platform['type'] == 'web' and _is_relative_url(platform['url']):
+                web.append(platform)
+            else:
+                other.append(platform)
+
+    return {'web': web, 'other': other}

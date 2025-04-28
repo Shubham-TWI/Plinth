@@ -1,21 +1,6 @@
-{% extends "simple_service.html" %}
+{% extends "app.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load bootstrap %}
@@ -23,40 +8,46 @@
 
 {% block configuration %}
 
-<div class="row">
-  <div class="col-lg-8">
-    <table class="table table-bordered table-condensed table-striped">
+  <div class="table-responsive">
+    <table class="table names-table">
       <thead>
         <tr>
-          <td></td>
-          {% for service in status.services %}
-          <td>
-            <div class="text-center">{{ service }}</div>
-          </td>
-          {% endfor %}
+          <th>{% trans "Type" %}</th>
+          <th class="names-domain-column">{% trans "Domain Name" %}</th>
+          <th>{% trans "Services" %}</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
-        {% for name_service in status.name_services %}
-        <tr>
-          <td>
-            <b>{{ name_service.type }}</b><br>
-            <i>{{ name_service.name }}</i>
-          </td>
-          {% for service in name_service.services_enabled %}
-          <td>
-            {% if service %}
-            <span class="label label-success">{% trans "Enabled" %}</span>
-            {% else %}
-            <span class="label label-warning">{% trans "Disabled" %}</span>
-            {% endif %}
-          </td>
-          {% endfor %}
-        </tr>
+        {% for domain in status.domains|dictsort:"domain_type.display_name" %}
+          <tr>
+            <td>{{ domain.domain_type.display_name }}</td>
+            <td class="names-domain-column">{{ domain.name }}</td>
+            <td>{{ domain.get_readable_services|join:', ' }}</td>
+            <td>
+              <a href="{% url domain.domain_type.configuration_url %}"
+                 role="button" class="btn btn-md btn-default">
+                {% trans "Configure" %}
+              </a>
+            </td>
+          </tr>
+        {% endfor %}
+
+        {% for domain_type in status.unused_domain_types %}
+          <tr>
+            <td>{{ domain_type.display_name }}</td>
+            <td>-</td>
+            <td>-</td>
+            <td>
+              <a href="{% url domain_type.configuration_url %}"
+                 role="button" class="btn btn-md btn-default">
+                {% trans "Configure" %}
+              </a>
+            </td>
+          </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-</div>
 
 {% endblock %}

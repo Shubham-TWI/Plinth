@@ -1,31 +1,17 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 URLs for the snapshot module.
 """
 
-from django.conf.urls import url
+from django.urls import re_path
 
 from . import views
 
 urlpatterns = [
-    url(r'^sys/snapshot/$', views.index, name='index'),
-    url(r'^sys/snapshot/(?P<number>\d+)/delete$', views.delete, name='delete'),
-    url(r'^sys/snapshot/all/delete$', views.delete_all, name='delete-all'),
-    url(r'^sys/snapshot/(?P<number>\d+)/rollback$', views.rollback,
-        name='rollback'),
+    re_path(r'^sys/snapshot/$', views.SnapshotAppView.as_view(), name='index'),
+    re_path(r'^sys/snapshot/manage/$', views.manage, name='manage'),
+    re_path(r'^sys/snapshot/selected/delete$', views.delete_selected,
+            name='delete-selected'),
+    re_path(r'^sys/snapshot/(?P<number>\d+)/rollback$', views.rollback,
+            name='rollback'),
 ]

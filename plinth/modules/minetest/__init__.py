@@ -1,56 +1,34 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
-"""
-Plinth module for Minetest server.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app for Minetest server."""
 
 import augeas
-
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from plinth.utils import format_lazy
-from .manifest import clients
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.daemon import Daemon
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Package, Packages, install
+from plinth.utils import Version, format_lazy
 
+from . import manifest, privileged
 
-version = 2
+_mods = [
+    Package('minetest-mod-3d-armor') | Package('minetest-mod-player-3d-armor'),
+    'minetest-mod-character-creator', 'minetest-mod-craftguide',
+    'minetest-mod-infinite-chest', 'minetest-mod-lucky-block',
+    'minetest-mod-maidroid', 'minetest-mod-mesecons',
+    'minetest-mod-moreblocks', 'minetest-mod-moreores', 'minetest-mod-nether',
+    'minetest-mod-pipeworks', 'minetest-mod-protector', 'minetest-mod-quartz',
+    'minetest-mod-skyblock', 'minetest-mod-throwing',
+    'minetest-mod-unified-inventory', 'minetest-mod-unifieddyes',
+    'minetest-mod-worldedit'
+]
 
-service = None
-
-managed_services = ['minetest-server']
-
-managed_packages = ['minetest-server', 'minetest-mod-advspawning',
-                    'minetest-mod-animalmaterials', 'minetest-mod-animals',
-                    'minetest-mod-mesecons', 'minetest-mod-mobf-core',
-                    'minetest-mod-mobf-trap', 'minetest-mod-moreblocks',
-                    'minetest-mod-nether', 'minetest-mod-torches']
-
-name = _('Minetest')
-
-short_description = _('Block Sandbox')
-
-description = [
+_description = [
     format_lazy(
         _('Minetest is a multiplayer infinite-world block sandbox. This '
           'module enables the Minetest server to be run on this '
@@ -59,71 +37,83 @@ description = [
           'is needed.'), box_name=_(cfg.box_name)),
 ]
 
-clients = clients
-
-reserved_usernames = ['Debian-minetest']
-
 CONFIG_FILE = '/etc/minetest/minetest.conf'
 AUG_PATH = '/files' + CONFIG_FILE + '/.anon'
 
 
-def init():
-    """Initialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-th-large', 'minetest:index', short_description)
+class MinetestApp(app_module.App):
+    """FreedomBox app for Minetest."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0], name,
-            ports=['minetest-plinth'], is_external=True, enable=enable,
-            disable=disable)
+    app_id = 'minetest'
 
-        if service.is_enabled():
-            add_shortcut()
+    _version = 2
 
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0], name,
-            ports=['minetest-plinth'], is_external=True, enable=enable,
-            disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+        info = app_module.Info(
+            app_id=self.app_id, version=self._version, name=_('Minetest'),
+            icon_filename='minetest', short_description=_('Block Sandbox'),
+            description=_description, manual_page='Minetest',
+            clients=manifest.clients,
+            donation_url='https://www.minetest.net/get-involved/#donate')
+        self.add(info)
 
+        menu_item = menu.Menu('menu-minetest', info.name,
+                              info.short_description, info.icon_filename,
+                              'minetest:index', parent_url_name='apps')
+        self.add(menu_item)
 
-def add_shortcut():
-    frontpage.add_shortcut('minetest', name, url=None,
-                           short_description=short_description,
-                           details=description,
-                           configure_url=reverse_lazy('minetest:index'),
-                           login_required=False)
+        shortcut = frontpage.Shortcut(
+            'shortcut-minetest', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            description=info.description, manual_page=info.manual_page,
+            configure_url=reverse_lazy('minetest:index'), clients=info.clients,
+            login_required=False)
+        self.add(shortcut)
 
+        packages = Packages('packages-minetest', ['minetest-server'] + _mods)
+        self.add(packages)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('service', ['enable', managed_services[0]])
-    add_shortcut()
+        firewall = Firewall('firewall-minetest', info.name,
+                            ports=['minetest-plinth'], is_external=True)
+        self.add(firewall)
 
+        daemon = Daemon('daemon-minetest', 'minetest-server',
+                        listen_ports=[(30000, 'udp4')])
+        self.add(daemon)
 
-def disable():
-    """Disable the module."""
-    actions.superuser_run('service', ['disable', managed_services[0]])
-    frontpage.remove_shortcut('minetest')
+        users_and_groups = UsersAndGroups(
+            'users-and-groups-minetest',
+            reserved_usernames=['Debian-minetest'])
+        self.add(users_and_groups)
 
+        backup_restore = BackupRestore('backup-restore-minetest',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if not old_version:
+            self.enable()
 
-    results.append(action_utils.diagnose_port_listening(30000, 'udp4'))
+    def force_upgrade(self, packages):
+        """Force upgrade minetest to resolve conffile prompt."""
+        if 'minetest-server' not in packages:
+            return False
 
-    return results
+        # Allow upgrade from 5.3.0 to 5.6.1
+        package = packages['minetest-server']
+        if Version(package['new_version']) > Version('5.7~'):
+            return False
+
+        config = get_configuration()
+        install(['minetest-server'], force_configuration='new')
+        privileged.configure(**config)
+
+        return True
 
 
 def load_augeas():

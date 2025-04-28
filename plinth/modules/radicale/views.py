@@ -1,41 +1,21 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Views for radicale module.
 """
 
 from django.contrib import messages
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth.modules import radicale
-from plinth.views import ServiceView
+from plinth.views import AppView
 
-from . import description, get_rights_value, managed_services
+from . import get_rights_value, privileged
 from .forms import RadicaleForm
 
 
-class RadicaleServiceView(ServiceView):
+class RadicaleAppView(AppView):
     """A specialized view for configuring radicale service."""
-    clients = radicale.clients
-    description = description
-    diagnostics_module_name = 'radicale'
     form_class = RadicaleForm
-    service_id = managed_services[0]
+    app_id = 'radicale'
 
     def get_initial(self):
         """Return the values to fill in the form."""
@@ -47,9 +27,7 @@ class RadicaleServiceView(ServiceView):
         """Change the access control of Radicale service."""
         data = form.cleaned_data
         if get_rights_value() != data['access_rights']:
-            actions.superuser_run('radicale', [
-                'configure', '--rights_type', data['access_rights']
-            ])
+            privileged.configure(data['access_rights'])
             messages.success(self.request,
                              _('Access rights configuration updated'))
         return super().form_valid(form)

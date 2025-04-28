@@ -1,0 +1,23 @@
+#language en
+
+##TAG:TRANSLATION-HEADER-START
+~- [[DebianWiki/EditorGuide#translation|Translation(s)]]: [[FreedomBox/Manual/NameServices|English]] - [[es/FreedomBox/Manual/NameServices|Español]] - [[uk/FreedomBox/Manual/NameServices|Українська]] -~
+##TAG:TRANSLATION-HEADER-END
+
+<<TableOfContents()>>
+
+## BEGIN_INCLUDE
+
+== Name Services ==
+
+Name Services provides an overview of ways the box can be reached from the public Internet: domain name, Tor Onion Service, and Pagekite. For each type of name, it is shown whether the HTTP, HTTPS, and SSH services are enabled or disabled for incoming connections through the given name.
+
+## END_INCLUDE
+
+Back to [[FreedomBox/Features|Features introduction]] or [[FreedomBox/Manual|manual]] pages.
+
+
+<<Include(FreedomBox/Portal)>>
+
+----
+CategoryFreedomBox

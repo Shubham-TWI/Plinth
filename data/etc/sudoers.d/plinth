@@ -1,1 +1,13 @@
-plinth    ALL=(ALL:ALL) NOPASSWD:/usr/share/plinth/actions/*
+#
+# Allow plinth user to run plinth action scripts with superuser privileges
+# without needing a password.
+#
+Cmnd_Alias FREEDOMBOX_ACTION = /usr/share/plinth/actions/actions
+Defaults!FREEDOMBOX_ACTION closefrom_override
+plinth    ALL=(ALL:ALL) NOPASSWD:FREEDOMBOX_ACTION
+
+#
+# On FreedomBox, allow all users in the 'admin' LDAP group to execute
+# commands as root.
+#
+%admin ALL=(root) ALL

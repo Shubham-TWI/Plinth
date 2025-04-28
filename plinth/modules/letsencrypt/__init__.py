@@ -1,60 +1,35 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Plinth module for using Let's Encrypt.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app for using Let's Encrypt."""
 
 import json
 import logging
+import pathlib
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth.errors import ActionError
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, menu
+from plinth.config import DropinConfigs
+from plinth.diagnostic_check import DiagnosticCheck
 from plinth.modules import names
-from plinth.modules import config
+from plinth.modules.apache.components import diagnose_url
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.names.components import DomainType
+from plinth.package import Packages
+from plinth.setup import store_error_message
+from plinth.signals import domain_added, domain_removed, post_app_loading
 from plinth.utils import format_lazy
-from plinth import module_loader
-from plinth.signals import domainname_change, domain_added, domain_removed
 
-version = 1
+from . import components, manifest, privileged
 
-is_essential = True
-
-depends = ['names']
-
-managed_packages = ['certbot']
-
-name = _('Let\'s Encrypt')
-
-short_description = _('Certificates')
-
-description = [
+_description = [
     format_lazy(
         _('A digital certificate allows users of a web service to verify the '
           'identity of the service and to securely communicate with it. '
           '{box_name} can automatically obtain and setup digital '
           'certificates for each available domain.  It does so by proving '
           'itself to be the owner of a domain to Let\'s Encrypt, a '
-          'certificate authority (CA).'),
-        box_name=_(cfg.box_name)),
+          'certificate authority (CA).'), box_name=_(cfg.box_name)),
     _('Let\'s Encrypt is a free, automated, and open certificate '
       'authority, run for the public\'s benefit by the Internet Security '
       'Research Group (ISRG).  Please read and agree with the '
@@ -62,152 +37,250 @@ description = [
       'Subscriber Agreement</a> before using this service.')
 ]
 
-service = None
-
-MODULES_WITH_HOOKS = ['ejabberd']
 LIVE_DIRECTORY = '/etc/letsencrypt/live/'
+CERTIFICATE_CHECK_DELAY = 120
 logger = logging.getLogger(__name__)
 
 
-def init():
-    """Intialize the module."""
-    menu = main_menu.get('system')
-    menu.add_urlname(name,
-                     'glyphicon-lock', 'letsencrypt:index', short_description)
-    domainname_change.connect(on_domainname_change)
-    domain_added.connect(on_domain_added)
-    domain_removed.connect(on_domain_removed)
+class LetsEncryptApp(app_module.App):
+    """FreedomBox app for Let's Encrypt."""
 
+    app_id = 'letsencrypt'
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
+    _version = 4
 
+    can_be_disabled = False
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-    for domain_type, domains in names.domains.items():
-        if domain_type == 'hiddenservice':
-            continue
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True, depends=['names'],
+                               name=_('Let\'s Encrypt'), icon='fa-lock',
+                               short_description=_('Certificates'),
+                               description=_description,
+                               manual_page='LetsEncrypt',
+                               donation_url='https://letsencrypt.org/donate/')
+        self.add(info)
 
-        for domain in domains:
-            results.append(action_utils.diagnose_url('https://' + domain))
+        menu_item = menu.Menu('menu-letsencrypt', info.name,
+                              info.short_description, info.icon,
+                              'letsencrypt:index',
+                              parent_url_name='system:security', order=20)
+        self.add(menu_item)
 
-    return results
+        packages = Packages('packages-letsencrypt', ['certbot'])
+        self.add(packages)
 
+        dropin_configs = DropinConfigs('dropin-configs-letsencrypt', [
+            '/etc/letsencrypt/renewal-hooks/deploy/50-freedombox',
+        ])
+        self.add(dropin_configs)
 
-def try_action(domain, action):
-    actions.superuser_run('letsencrypt', [action, '--domain', domain])
+        backup_restore = BackupRestore('backup-restore-letsencrypt',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
+    @staticmethod
+    def post_init():
+        """Perform post initialization operations."""
+        domain_added.connect(on_domain_added)
+        domain_removed.connect(on_domain_removed)
 
-def enable_renewal_management(domain):
-    if domain == config.get_domainname():
-        try:
-            actions.superuser_run('letsencrypt', ['manage_hooks', 'enable'])
-            logger.info(
-                _('Certificate renewal management enabled for {domain}.')
-                .format(domain=domain))
-        except ActionError as exception:
-            logger.error(
-                _('Failed to enable certificate renewal management for '
-                  '{domain}: {error}').format(
-                      domain=domain, error=exception.args[2]))
+        post_app_loading.connect(_certificate_handle_modified)
 
+    def diagnose(self) -> list[DiagnosticCheck]:
+        """Run diagnostics and return the results."""
+        results = super().diagnose()
 
-def on_domainname_change(sender, old_domainname, new_domainname, **kwargs):
-    """Disable renewal hook management after a domain name change."""
-    del sender  # Unused
-    del new_domainname  # Unused
-    del kwargs  # Unused
+        for domain in names.components.DomainName.list():
+            if domain.domain_type.can_have_certificate:
+                result = diagnose_url('https://' + domain.name)
+                result.check_id = f'letsencrypt-domain-{domain.name}'
+                result.parameters['domain'] = domain.name
+                results.append(result)
 
-    for module in MODULES_WITH_HOOKS:
-        actions.superuser_run(module, ['letsencrypt', 'drop',
-                                       '--domain', old_domainname], async=True)
-    actions.superuser_run('letsencrypt', ['manage_hooks', 'disable',
-                                          '--domain', old_domainname],
-                          async=True)
+        return results
 
+    def repair(self, failed_checks: list) -> bool:
+        """Try to repair failed diagnostics.
 
-def get_manage_hooks_status():
-    """Return status of hook management for current domain."""
-    try:
-        output = actions.superuser_run('letsencrypt',
-                                       ['manage_hooks', 'status'])
-    except ActionError:
+        Returns whether the app setup should be re-run.
+        """
+        status = get_status()
+
+        # Obtain/re-obtain certificates for failing domains
+        for failed_check in failed_checks:
+            if not failed_check.check_id.startswith('letsencrypt-domain'):
+                continue
+
+            domain = failed_check.parameters['domain']
+            try:
+                domain_status = status['domains'][domain]
+                if domain_status.get('certificate_available', False):
+                    certificate_obtain(domain)
+                else:
+                    certificate_reobtain(domain)
+            except Exception as error:
+                # This happens if a non-functional domain is configured.
+                logger.error('Could not re-obtain certificate: %s', error)
+                # Add the error message to thread local storage
+                store_error_message(str(error))
+
         return False
 
-    return output.strip()
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup(old_version)
 
 
-def get_installed_modules():
-    installed_modules = [module_name for module_name, module in
-                         module_loader.loaded_modules.items()
-                         if module_name in MODULES_WITH_HOOKS
-                         and module.setup_helper.get_state() == 'up-to-date']
+def certificate_obtain(domain):
+    """Obtain a certificate for a domain and notify handlers."""
+    privileged.obtain(domain)
+    components.on_certificate_event('obtained', [domain], None)
 
-    return installed_modules
+
+def certificate_reobtain(domain):
+    """Re-obtain a certificate for a domain and notify handlers.
+
+    Don't trigger an obtained event. Re-obtaining a certificate also leads to a
+    renewal (deploy) event from Let's Encrypt. Further, this event is not sent
+    when obtaining the certificate for the first time. There is no easy way to
+    distinguish if a renewal event is trigger because of obtain or because of
+    re-obtain. Hence, handle re-obtain differently from obtain and don't
+    trigger obtain event (LE will trigger a renewal event).
+
+    """
+    privileged.obtain(domain)
+
+
+def certificate_revoke(domain, really_revoke=True):
+    """Revoke a certificate for a domain and notify handlers.
+
+    Revoke a certificate unless really requested to. Otherwise, simply trigger
+    actions as if the certificate has been revoked. On actions such as domain
+    removed, behave as if certificate has been revoked but don't actually
+    revoke the certificate. Domains could be re-added later and certificates
+    could be reused. Certificates are precious (due to a rate limit for
+    obtaining certificates on the Let's Encrypt servers).
+    """
+    if really_revoke:
+        privileged.revoke(domain)
+
+    components.on_certificate_event('revoked', [domain], None)
+
+
+def certificate_delete(domain):
+    """Delete a certificate for a domain and notify handlers."""
+    privileged.delete(domain)
+    components.on_certificate_event('deleted', [domain], None)
 
 
 def on_domain_added(sender, domain_type='', name='', description='',
                     services=None, **kwargs):
-    """Obtain a certificate for the new domain"""
-    if domain_type == 'hiddenservice':
+    """Obtain a certificate for the new domain."""
+    if not DomainType.get(domain_type).can_have_certificate:
         return False
 
     # Check if a cert if already available
     for domain_name, domain_status in get_status()['domains'].items():
-        if domain_name == name and \
-           domain_status.certificate_available and \
-           domain_status.validity == 'valid':
+        if domain_name == name and domain_status and \
+           domain_status['certificate_available'] and \
+           domain_status['validity'] == 'valid':
             return False
 
     try:
-        # Obtaining certs during tests or empty names isn't expected to succeed
-        if sender != 'test' and name:
-            logger.info("Obtaining a Let\'s Encrypt certificate for " + name)
-            try_action(name, 'obtain')
-            enable_renewal_management(name)
+        if name:
+            logger.info('Obtaining certificate for %s', name)
+            certificate_obtain(name)
         return True
-    except ActionError as ex:
+    except Exception:
         return False
 
 
 def on_domain_removed(sender, domain_type, name='', **kwargs):
-    """Revoke Let's Encrypt certificate for the removed domain"""
+    """Revoke Let's Encrypt certificate for the removed domain."""
+    if not DomainType.get(domain_type).can_have_certificate:
+        return False
+
     try:
-        # Revoking certs during tests or empty names isn't expected to succeed
-        if sender != 'test' and name:
-            logger.info("Revoking the Let\'s Encrypt certificate for " + name)
-            try_action(name, 'revoke')
+        if name:
+            logger.info('Revoking certificate for %s', name)
+            certificate_revoke(name, really_revoke=False)
         return True
-    except ActionError as exception:
-        logger.warn(
-            ('Failed to revoke certificate for domain {domain}: {error}')
-            .format(domain=name, error=exception.args[2]))
+    except Exception:
+        logger.warning('Failed to revoke certificate for %s', name)
         return False
 
 
 def get_status():
     """Get the current settings."""
-    status = actions.superuser_run('letsencrypt', ['get-status'])
-    status = json.loads(status)
-    curr_dom = config.get_domainname()
-    current_domain = {
-        'name': curr_dom,
-        'has_cert': (curr_dom in status['domains'] and
-                     status['domains'][curr_dom]['certificate_available']),
-        'manage_hooks_status': get_manage_hooks_status()
-    }
-    status['current_domain'] = current_domain
+    status = privileged.get_status()
 
-    for domain_type, domains in names.domains.items():
-        # XXX: Remove when Let's Encrypt supports .onion addresses
-        if domain_type == 'hiddenservice':
-            continue
-
-        for domain in domains:
-            status['domains'].setdefault(domain, {})
+    for domain in names.components.DomainName.list():
+        if domain.domain_type.can_have_certificate:
+            status['domains'].setdefault(domain.name, {})
 
     return status
+
+
+def _certificate_handle_modified(**kwargs):
+    """Generate events for certificates that got modified during downtime.
+
+    This runs as a synchronous method soon after initializing the apps. After
+    this is done, remaining initialization happens.
+
+    This method is a wrapper over the read method to catch and print
+    exceptions.
+
+    """
+    logger.info('Checking if any Let\'s Encrypt certificates got renewed.')
+    try:
+        _certificate_handle_modified_internal()
+    except Exception:
+        logger.exception('Error triggering certificate events.')
+
+
+def _certificate_handle_modified_internal():
+    """Generate events for certificates that got modified during downtime."""
+    status = get_status()
+    for domain, domain_status in status['domains'].items():
+        if not domain_status:
+            continue
+
+        lineage = domain_status['lineage']
+        modified_time = domain_status['modified_time']
+        if certificate_get_last_seen_modified_time(lineage) < modified_time:
+            logger.info('Certificate for %s got renewed offline.', domain)
+            components.on_certificate_event_sync('renewed', domain, lineage)
+        else:
+            logger.info('Certificate for %s is already the latest known.',
+                        domain)
+
+
+def certificate_get_last_seen_modified_time(lineage):
+    """Return the last seen expiry date of a certificate."""
+    from plinth import kvstore
+    info = kvstore.get_default('letsencrypt_certificate_info', '{}')
+    info = json.loads(info)
+    try:
+        return info[str(lineage)]['last_seen_modified_time']
+    except KeyError:
+        return 0
+
+
+def certificate_set_last_seen_modified_time(lineage):
+    """Write to store a certificate's last seen expiry date."""
+    lineage = pathlib.Path(lineage)
+    modified_time = privileged.get_modified_time(lineage.name)
+
+    from plinth import kvstore
+    info = kvstore.get_default('letsencrypt_certificate_info', '{}')
+    info = json.loads(info)
+
+    certificate_info = info.setdefault(str(lineage), {})
+    certificate_info['last_seen_modified_time'] = modified_time
+
+    kvstore.set('letsencrypt_certificate_info', json.dumps(info))

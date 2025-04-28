@@ -1,49 +1,28 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
-"""
-Plinth module to configure matrix-synapse server.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure matrix-synapse server."""
 
 import logging
 import os
 
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from ruamel.yaml.util import load_yaml_guess_indent
 
-from plinth import action_utils
-from plinth import actions
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from .manifest import clients
+from plinth import app as app_module
+from plinth import frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.coturn.components import TurnConfiguration, TurnConsumer
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.letsencrypt.components import LetsEncrypt
+from plinth.package import Packages, install
+from plinth.utils import format_lazy, is_non_empty_file
 
-version = 2
+from . import manifest, privileged
 
-managed_services = ['matrix-synapse']
-
-managed_packages = ['matrix-synapse', 'matrix-synapse-ldap3']
-
-name = _('Matrix Synapse')
-
-short_description = _('Chat Server')
-
-description = [
+_description = [
     _('<a href="https://matrix.org/docs/guides/faq.html">Matrix</a> is an new '
       'ecosystem for open, federated instant messaging and VoIP. Synapse is a '
       'server implementing the Matrix protocol. It provides chat groups, '
@@ -51,98 +30,158 @@ description = [
       'synchronization and does not require phone numbers to work. Users on a '
       'given Matrix server can converse with users on all other Matrix '
       'servers via federation.'),
-
-    _('To communicate, you can use the '
-      '<a href="https://matrix.org/docs/projects/">available clients</a> '
-      'for mobile, desktop and the web. <a href="https://riot.im/">Riot</a> '
-      'client is recommended.')
+    format_lazy(
+        _('Matrix Synapse needs a STUN/TURN server for audio/video calls. '
+          'Install the <a href={coturn_url}>Coturn</a> app or configure '
+          'an external server.'), coturn_url=reverse_lazy('coturn:index'))
 ]
-
-clients = clients
-
-service = None
 
 logger = logging.getLogger(__name__)
 
-SERVER_NAME_PATH = "/etc/matrix-synapse/conf.d/server_name.yaml"
-CONFIG_FILE_PATH = '/etc/matrix-synapse/homeserver.yaml'
+
+class MatrixSynapseApp(app_module.App):
+    """FreedomBox app for Matrix Synapse."""
+
+    app_id = 'matrixsynapse'
+
+    _version = 10
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(
+            app_id=self.app_id, version=self._version, depends=['coturn'],
+            name=_('Matrix Synapse'), icon_filename='matrixsynapse',
+            short_description=_('Chat Server'), description=_description,
+            manual_page='MatrixSynapse', clients=manifest.clients)
+        self.add(info)
+
+        menu_item = menu.Menu('menu-matrixsynapse', info.name,
+                              info.short_description, 'matrixsynapse',
+                              'matrixsynapse:index', parent_url_name='apps')
+        self.add(menu_item)
+
+        shortcut = frontpage.Shortcut(
+            'shortcut-matrixsynapse', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            description=info.description, manual_page=info.manual_page,
+            configure_url=reverse_lazy('matrixsynapse:index'),
+            clients=info.clients, login_required=True)
+        self.add(shortcut)
+
+        # Include python3-psycopg2 to prevent accidental uninstall
+        # (see issue #2298).
+        packages = Packages(
+            'packages-matrixsynapse',
+            ['matrix-synapse', 'matrix-synapse-ldap3', 'python3-psycopg2'])
+        self.add(packages)
+
+        dropin_configs = DropinConfigs('dropin-configs-matrixsynapse', [
+            '/etc/apache2/conf-available/matrix-synapse-plinth.conf',
+            '/etc/fail2ban/jail.d/matrix-auth-freedombox.conf',
+            '/etc/fail2ban/filter.d/matrix-auth-freedombox.conf',
+        ])
+        self.add(dropin_configs)
+
+        firewall = Firewall('firewall-matrixsynapse', info.name,
+                            ports=['matrix-synapse-plinth'], is_external=True)
+        self.add(firewall)
+
+        webserver = Webserver('webserver-matrixsynapse',
+                              'matrix-synapse-plinth',
+                              urls=['https://{host}/_matrix/client/versions'])
+        self.add(webserver)
+
+        letsencrypt = LetsEncrypt(
+            'letsencrypt-matrixsynapse', domains=get_domains,
+            daemons=['matrix-synapse'], should_copy_certificates=True,
+            private_key_path='/etc/matrix-synapse/homeserver.tls.key',
+            certificate_path='/etc/matrix-synapse/homeserver.tls.crt',
+            user_owner='matrix-synapse', group_owner='nogroup',
+            managing_app='matrixsynapse')
+        self.add(letsencrypt)
+
+        daemon = Daemon('daemon-matrixsynapse', 'matrix-synapse',
+                        listen_ports=[(8008, 'tcp4'), (8448, 'tcp4')])
+        self.add(daemon)
+
+        backup_restore = BackupRestore('backup-restore-matrixsynapse',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+        turn = MatrixSynapseTurnConsumer('turn-matrixsynapse')
+        self.add(turn)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if old_version and old_version < 6:
+            upgrade()
+        else:
+            privileged.post_install()
+
+        if old_version and old_version <= 7:
+            privileged.fix_public_registrations()
+
+        if not old_version:
+            self.enable()
+
+        self.get_component('letsencrypt-matrixsynapse').setup_certificates()
+
+        if not old_version or get_turn_configuration()[1]:
+            # Configure STUN/TURN only if there's a valid TLS domain set for
+            # Coturn. Do this if app is being freshly installed or if it is
+            # previously installed and configured to use STUN/TURN
+            # auto-management.
+            config = self.get_component(
+                'turn-matrixsynapse').get_configuration()
+            update_turn_configuration(config, force=True)
+
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()
 
 
-def init():
-    """Initialize the matrix-synapse module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-comment', 'matrixsynapse:index',
-                     short_description)
+class MatrixSynapseTurnConsumer(TurnConsumer):
+    """Component to manage Coturn configuration for Matrix Synapse."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            'matrix-synapse', name,
-            ports=['matrix-synapse-plinth'],
-            is_external=True, is_enabled=is_enabled, enable=enable,
-            disable=disable)
-        if is_enabled():
-            add_shortcut()
+    def on_config_change(self, config: TurnConfiguration):
+        """Add or update STUN/TURN configuration."""
+        update_turn_configuration(config)
 
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    global service
-    if service is None:
-        service = service_module.Service(
-            'matrix-synapse', name,
-            ports=['matrix-synapse-plinth'],
-            is_external=True, is_enabled=is_enabled, enable=enable,
-            disable=disable)
-
-    helper.call('post', actions.superuser_run, 'matrixsynapse',
-                ['post-install'])
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+def upgrade():
+    """Upgrade matrix-synapse configuration to avoid conffile prompt."""
+    config = privileged.get_config()
+    privileged.move_old_conf()
+    install(['matrix-synapse'], force_configuration='new', reinstall=True,
+            force_missing_configuration=True)
+    privileged.post_install()
+    privileged.set_config(**config)
 
 
-def add_shortcut():
-    """Add a shortcut to the frontpage."""
-    frontpage.add_shortcut('matrixsynapse', name, details=description,
-                           short_description=short_description,
-                           configure_url=reverse_lazy('matrixsynapse:index'),
-                           login_required=True)
+def setup_domain(domain_name):
+    """Configure a domain name for matrixsynapse."""
+    app = app_module.App.get('matrixsynapse')
+    app.get_component('letsencrypt-matrixsynapse').setup_certificates(
+        [domain_name])
+    privileged.setup(domain_name)
 
 
 def is_setup():
     """Return whether the Matrix Synapse server is setup."""
-    return os.path.exists(SERVER_NAME_PATH)
+    return os.path.exists(privileged.SERVER_NAME_PATH)
 
 
-def is_enabled():
-    """Return whether the module is enabled."""
-    return action_utils.service_is_enabled('matrix-synapse')
+def get_domains():
+    """Return a list of domains this app is interested in."""
+    domain = get_configured_domain_name()
+    if domain:
+        return [domain]
 
-
-def enable():
-    """Enable the module."""
-    actions.superuser_run('matrixsynapse', ['enable'])
-    add_shortcut()
-
-
-def disable():
-    """Enable the module."""
-    actions.superuser_run('matrixsynapse', ['disable'])
-    frontpage.remove_shortcut('matrixsynapse')
-
-
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
-
-    results.append(action_utils.diagnose_port_listening(8008, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(8448, 'tcp4'))
-    results.extend(action_utils.diagnose_url_on_all(
-        'https://{host}/_matrix', check_certificate=False))
-
-    return results
+    return []
 
 
 def get_configured_domain_name():
@@ -150,14 +189,41 @@ def get_configured_domain_name():
     if not is_setup():
         return None
 
-    with open(SERVER_NAME_PATH) as config_file:
+    with open(privileged.SERVER_NAME_PATH, encoding='utf-8') as config_file:
         config, _, _ = load_yaml_guess_indent(config_file)
 
     return config['server_name']
 
 
-def get_public_registration_status():
-    """Return whether public registration is enabled."""
-    output = actions.superuser_run('matrixsynapse', ['public_registration',
-                                                     'status'])
-    return output.strip() == 'enabled'
+def get_turn_configuration() -> tuple[TurnConfiguration, bool]:
+    """Return TurnConfiguration if setup else empty."""
+    for file_path, managed in ((privileged.OVERRIDDEN_TURN_CONF_PATH, False),
+                               (privileged.TURN_CONF_PATH, True)):
+        if is_non_empty_file(file_path):
+            with open(file_path, encoding='utf-8') as config_file:
+                config, _, _ = load_yaml_guess_indent(config_file)
+                return (TurnConfiguration(None, config['turn_uris'],
+                                          config['turn_shared_secret']),
+                        managed)
+
+    return (TurnConfiguration(), True)
+
+
+def get_certificate_status():
+    """Return the status of certificate for the configured domain."""
+    app = app_module.App.get('matrixsynapse')
+    status = app.get_component('letsencrypt-matrixsynapse').get_status()
+    if not status:
+        return 'no-domains'
+
+    return list(status.values())[0]
+
+
+def update_turn_configuration(config: TurnConfiguration, managed=True,
+                              force=False):
+    """Update the STUN/TURN server configuration."""
+    app = app_module.App.get('matrixsynapse')
+    if not force and app.needs_setup():
+        return
+
+    privileged.configure_turn(managed, config.to_json())

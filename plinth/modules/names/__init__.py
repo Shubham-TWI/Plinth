@@ -1,56 +1,69 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module to configure name services
+FreedomBox app to configure name services.
 """
 
-from django.utils.translation import ugettext_lazy as _
 import logging
 
-from plinth.menu import main_menu
+from django.utils.translation import gettext_lazy as _
+
+from plinth import app as app_module
+from plinth import cfg, menu
+from plinth.modules.backups.components import BackupRestore
 from plinth.signals import domain_added, domain_removed
+from plinth.utils import format_lazy
 
-
-SERVICES = (
-    ('http', _('HTTP'), 80),
-    ('https', _('HTTPS'), 443),
-    ('ssh', _('SSH'), 22),
-)
-
-version = 1
-
-is_essential = True
-
-name = _('Name Services')
-
-domain_types = {}
-domains = {}
+from . import components, manifest
 
 logger = logging.getLogger(__name__)
 
+_description = [
+    format_lazy(
+        _('Name Services provides an overview of the ways {box_name} can be '
+          'reached from the public Internet: domain name, Tor onion service, '
+          'and Pagekite. For each type of name, it is shown whether the HTTP, '
+          'HTTPS, and SSH services are enabled or disabled for incoming '
+          'connections through the given name.'), box_name=(cfg.box_name))
+]
 
-def init():
-    """Initialize the names module."""
-    menu = main_menu.get('system')
-    menu.add_urlname(name, 'glyphicon-tag', 'names:index')
 
-    domain_added.connect(on_domain_added)
-    domain_removed.connect(on_domain_removed)
+class NamesApp(app_module.App):
+    """FreedomBox app for names."""
+
+    app_id = 'names'
+
+    _version = 1
+
+    can_be_disabled = False
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True, name=_('Name Services'),
+                               icon='fa-tags', description=_description,
+                               manual_page='NameServices')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-names', info.name, None, info.icon,
+                              'names:index',
+                              parent_url_name='system:visibility', order=10)
+        self.add(menu_item)
+
+        backup_restore = BackupRestore('backup-restore-names',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    @staticmethod
+    def post_init():
+        """Perform post initialization operations."""
+        domain_added.connect(on_domain_added)
+        domain_removed.connect(on_domain_removed)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        self.enable()
 
 
 def on_domain_added(sender, domain_type, name='', description='',
@@ -59,68 +72,38 @@ def on_domain_added(sender, domain_type, name='', description='',
     if not domain_type:
         return
 
-    domain_types[domain_type] = description
-
     if not name:
         return
     if not services:
         services = []
 
-    if domain_type not in domains:
-        # new domain_type
-        domains[domain_type] = {}
-    domains[domain_type][name] = services
-    logger.info('Added domain %s of type %s with services %s',
-                name, domain_type, str(services))
+    components.DomainName('domain-' + sender + '-' + name, name, domain_type,
+                          services)
+    logger.info('Added domain %s of type %s with services %s', name,
+                domain_type, str(services))
 
 
 def on_domain_removed(sender, domain_type, name='', **kwargs):
     """Remove domain from global list."""
-    if domain_type in domains:
-        if name == '':  # remove all domains of this type
-            domains[domain_type] = {}
-            logger.info('Removed all domains of type %s', domain_type)
-        elif name in domains[domain_type]:
-            del domains[domain_type][name]
-            logger.info('Removed domain %s of type %s', name, domain_type)
-
-
-def get_domain_types():
-    """Get list of domain_types."""
-    return list(domain_types.keys())
-
-
-def get_description(domain_type):
-    """Get description of a domain_type, if available."""
-    if domain_type in domain_types:
-        return domain_types[domain_type]
+    if name:
+        component_id = 'domain-' + sender + '-' + name
+        components.DomainName.get(component_id).remove()
+        logger.info('Removed domain %s of type %s', name, domain_type)
     else:
-        return domain_type
+        for domain_name in components.DomainName.list():
+            if domain_name.domain_type.component_id == domain_type:
+                domain_name.remove()
+
+                logger.info('Remove domain %s of type %s', domain_name.name,
+                            domain_type)
 
 
-def get_domain(domain_type):
-    """
-    Get domain of type domain_type.
-
-    This function is meant for use with single-domain domain_types. If there is
-    more than one domain, any one of the domains may be returned.
-    """
-    if domain_type in domains and len(domains[domain_type]) > 0:
-        return list(domains[domain_type].keys())[0]
-    else:
-        return None
+######################################################
+# Domain utilities meant to be used by other modules #
+######################################################
 
 
-def get_enabled_services(domain_type, domain):
-    """Get list of enabled services for a domain."""
-    try:
-        return domains[domain_type][domain]
-    except KeyError:
-        # domain_type or domain not registered
-        return []
-
-
-def get_services_status(domain_type, domain):
-    """Get list of whether each service is enabled for a domain."""
-    enabled = get_enabled_services(domain_type, domain)
-    return [service[0] in enabled for service in SERVICES]
+def get_available_tls_domains():
+    """Return an iterator with all domains able to have a certificate."""
+    return (domain.name for domain in components.DomainName.list()
+            if domain.domain_type.can_have_certificate)

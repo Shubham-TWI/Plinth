@@ -1,22 +1,27 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module for api for android app.
+FreedomBox app for api for android app.
 """
 
-version = 1
+from plinth import app as app_module
+
+
+class ApiApp(app_module.App):
+    """FreedomBox app for API for Android app."""
+
+    app_id = 'api'
+
+    _version = 1
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True)
+        self.add(info)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        self.enable()

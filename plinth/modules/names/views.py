@@ -1,53 +1,33 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module for name services
+FreedomBox app for name services.
 """
 
-from django.template.response import TemplateResponse
-from django.utils.translation import ugettext as _
+from plinth.views import AppView
 
-from . import SERVICES, get_domain_types, get_description
-from . import get_domain, get_services_status
-from plinth.modules import names
+from . import components
 
 
-def index(request):
-    """Serve name services page."""
-    status = get_status()
+class NamesAppView(AppView):
+    """Show names app main page."""
 
-    return TemplateResponse(request, 'names.html',
-                            {'title': names.name,
-                             'status': status})
+    app_id = 'names'
+    template_name = 'names.html'
+
+    def get_context_data(self, *args, **kwargs):
+        """Add additional context data for template."""
+        context = super().get_context_data(*args, **kwargs)
+        context['status'] = get_status()
+        return context
 
 
 def get_status():
     """Get configured services per name."""
-    name_services = []
-    for domain_type in sorted(get_domain_types()):
-        domain = get_domain(domain_type)
-        name_services.append({
-            'type': get_description(domain_type),
-            'name': domain or _('Not Available'),
-            'services_enabled': get_services_status(domain_type, domain),
-        })
+    domains = components.DomainName.list()
+    used_domain_types = {domain.domain_type for domain in domains}
+    unused_domain_types = [
+        domain_type for domain_type in components.DomainType.list().values()
+        if domain_type not in used_domain_types
+    ]
 
-    return {
-        'services': [service[1] for service in SERVICES],
-        'name_services': name_services,
-    }
+    return {'domains': domains, 'unused_domain_types': unused_domain_types}

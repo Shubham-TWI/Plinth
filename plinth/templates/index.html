@@ -1,92 +1,90 @@
 {% extends 'base.html' %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load i18n %}
 {% load static %}
 
-{% block icons %}
 
-  <div class="row">
-    {% if shortcuts %}
+{% block body_class %}index-page{% endblock %}
 
-      {% for shortcut in shortcuts %}
-        {% if not shortcut.hidden %}
-          {% if user.is_authenticated or not shortcut.login_required %}
-            <div class="col-sm-3">
-              <ul class="nav nav-pills nav-stacked">
-                {% if selected_id == shortcut.id %}
-                  <li class="active">
-                    <a href="{{ shortcut.url }}" class="active">
-                {% else %}
-                  <li>
-                    <a href="{{ shortcut.url }}">
-                {% endif %}
-                      <center>
-                        <img src="{% static 'theme/icons/' %}{{ shortcut.icon }}.png" style="max-width: 100px; height: 100px" />
-                        <br>
-                        <div class="shortcut-label">
-                        {{ shortcut.label|linebreaks }}
-                        </div>
-                      </center>
-                    </a>
-                  </li>
-              </ul>
-            </div>
-          {% endif %}
-        {% endif %}
-      {% endfor %}
+{% block container %}
 
-    {% else %}
+  {% if messages or selected_shortcut or not shortcuts %}
+    <div class="container content-container">
 
-      <h4>
-        {% url 'apps' as apps_url %}
-        {% blocktrans trimmed %}
-          Enable some <a href="{{ apps_url }}">applications</a> to add
-          shortcuts to this page.
-        {% endblocktrans %}
-      </h4>
+      {% include 'messages.html' %}
 
-    {% endif %}
-  </div>
-
-  <br>
-  {% if details %}
-    <div class="panel panel-primary">
-      <div class="panel-heading">
-        <h3 class="panel-title">{{ details_label }}</h3>
-      </div>
-
-      {% for paragraph in details %}
-        <div class="panel-body">
-          {{ paragraph|safe }}
-        </div>
-      {% endfor %}
-      <br>
-
-      {% if user.is_authenticated and user_is_admin and configure_url %}
-        <a class="btn btn-primary btn-sm"
-           style="margin-left : 10px; margin-bottom : 5px"
-           href="{{ configure_url }}">
-          {% trans "Configure &raquo;" %}</a>
+      {% if not shortcuts %}
+        <p>
+          {% url 'apps' as apps_url %}
+          {% blocktrans trimmed %}
+            Enable some <a href="{{ apps_url }}">applications</a> to add
+            shortcuts to this page.
+          {% endblocktrans %}
+        </p>
       {% endif %}
 
+      {% if selected_shortcut.description %}
+        {% include "app-header.html" with app_info=selected_shortcut %}
+
+        <section class="toolbar">
+          <div class="btn-toolbar" role="toolbar">
+            {% include "clients-button.html" with clients=selected_shortcut.clients enabled=True %}
+
+            {% if user.is_authenticated and user_is_admin and selected_shortcut.configure_url %}
+              <a class="btn btn-primary" href="{{ selected_shortcut.configure_url }}">
+                {% trans "Configure" %}</a>
+            {% endif %}
+          </div>
+
+          <div class="toolbar-collapsed-content">
+            {% include "clients.html" with clients=selected_shortcut.clients enabled=True %}
+          </div>
+        </section>
+      {% endif %}
+
+    </div>
+  {% endif %}
+
+  {% if shortcuts %}
+    <div class="container card-container">
+      <div class="row">
+        <div class="card-list">
+          {% for shortcut in shortcuts %}
+            {% if shortcut.is_enabled %}
+              {% if user.is_authenticated or not shortcut.login_required %}
+                <div class="card">
+                  {% if selected_shortcut.component_id == shortcut.component_id %}
+                    <a href="{{ shortcut.url }}" class="nav-link active">
+                  {% else %}
+                    <a href="{{ shortcut.url }}" class="nav-link">
+                  {% endif %}
+                        <div class="card-title">
+                          {{ shortcut.name }}
+                        </div>
+                        <div class="card-icon">
+                          {% if "custom" in shortcut.icon %}
+                            <img src="{{ shortcut.icon }}"/>
+                          {% else %}
+                            {% if shortcut.app_id %}
+                              <img src="{% static shortcut.app_id %}/icons/{{ shortcut.icon }}.svg"/>
+                            {% else %}
+                              <img src="{% static 'theme/icons/' %}{{ shortcut.icon }}.svg"/>
+                            {% endif %}
+                          {% endif %}
+                        </div>
+                        <div class="card-description">
+                          {{ shortcut.short_description|default:'' }}
+                        </div>
+                    </a>
+                </div>
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
     </div>
   {% endif %}
 
@@ -97,7 +95,7 @@
 
   <p>
     <a href="{% url 'index' %}" title="{{ box_name }}">
-      <img class="footer-logo" src="{% static 'theme/img/FreedomBox-logo-standard.svg' %}"
+      <img class="footer-logo" src="{% static 'theme/img/freedombox-logo-standard.svg' %}"
            alt="{{ box_name }}" />
     </a>
   </p>
@@ -113,29 +111,29 @@
 
   <p>
     {% blocktrans trimmed %}
-      This portal is a part of Plinth, the {{ box_name }} web
-      interface. Plinth is free software, distributed under the GNU
-      Affero General Public License, Version 3 or later.
+      This portal is a part of the {{ box_name }} web interface. {{ box_name }}
+      is free software, distributed under the GNU Affero General Public License,
+      Version 3 or later.
     {% endblocktrans %}
   </p>
 
   <div class="row">
-    <div class="col-md-2 col-md-offset-3">
+    <div class="col-lg-2 offset-lg-3">
       <p>
         <a href="https://wiki.debian.org/FreedomBox/Manual">
-          {% trans "Manual" %}
+          {% trans "Manual" context "User guide"%}
         </a>
       </p>
       <p>
         <a href="https://wiki.debian.org/FreedomBox">{% trans "Wiki" %}</a>
       </p>
+      <p>
+        <a href="https://salsa.debian.org/freedombox-team/">{% trans "Source Code" %}</a>
+      </p>
     </div>
-    <div class="col-md-2">
+    <div class="col-lg-2">
       <p>
         <a href="https://freedombox.org">{% trans "Homepage" %}</a>
-      </p>
-      <p>
-        <a href="https://github.com/freedombox/">{% trans "Source Code" %}</a>
       </p>
       <p>
         <a href="https://freedomboxfoundation.org/donate/">{% trans "Donate" %}</a>
@@ -146,7 +144,12 @@
         </a>
       </p>
     </div>
-    <div class="col-md-2">
+    <div class="col-lg-2">
+      <p>
+        <a href="https://discuss.freedombox.org/">
+          {%trans "Forum" %}
+        </a>
+      </p>
       <p>
         <a href="https://webchat.oftc.net/?randomnick=1&channels=freedombox&prompt=1">
           {%trans "IRC Chatroom" %}
@@ -158,13 +161,6 @@
         </a>
       </p>
     </div>
-  </div>
-
-  <div class="license-info">
-    <p>
-      <a href="{% static 'jslicense.html' %}" data-jslicense="1">
-        {% trans "JavaScript license information" %}</a>
-    </p>
   </div>
 
 {% endblock %}

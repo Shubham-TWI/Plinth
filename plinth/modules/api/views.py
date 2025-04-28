@@ -1,39 +1,25 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module for api for android app.
+FreedomBox app for api for android app.
 """
 
-from django.http import HttpResponse
+import copy
+import json
+
 from django.core.serializers.json import DjangoJSONEncoder
+from django.http import HttpResponse
 from django.templatetags.static import static
 
 from plinth import frontpage
-from plinth import module_loader
 from plinth.modules import names
-import json
 
 
 def access_info(request, **kwargs):
     """API view to return a list of domains and types."""
     domains = [{
-        'domain': domain,
-        'type': domain_type
-    } for domain_type, domains in names.domains.items() for domain in domains]
+        'domain': domain.name,
+        'type': domain.domain_type.component_id
+    } for domain in names.components.DomainName.list()]
     response = {'domains': domains}
 
     return HttpResponse(json.dumps(response), content_type='application/json')
@@ -42,31 +28,44 @@ def access_info(request, **kwargs):
 def shortcuts(request, **kwargs):
     """API view to return the list of frontpage services."""
     # XXX: Get the module (or module name) from shortcut properly.
+    username = str(request.user) if request.user.is_authenticated else None
+    response = get_shortcuts_as_json(username)
+    return HttpResponse(json.dumps(response, cls=DjangoJSONEncoder),
+                        content_type='application/json')
+
+
+def get_shortcuts_as_json(username=None):
     shortcuts = [
-        _get_shortcut_data(shortcut['id'].split('_')[0], shortcut)
-        for shortcut in frontpage.get_shortcuts()
+        _get_shortcut_data(shortcut)
+        for shortcut in frontpage.Shortcut.list(username)
+        if shortcut.component_id and shortcut.is_enabled()
     ]
-    response = {'shortcuts': shortcuts}
-    return HttpResponse(
-        json.dumps(response, cls=DjangoJSONEncoder),
-        content_type='application/json')
+    shortcuts += frontpage.get_custom_shortcuts()['shortcuts']
+    return {'shortcuts': shortcuts}
 
 
-def _get_shortcut_data(module_name, shortcut):
+def _get_shortcut_data(shortcut):
     """Return detailed information about a shortcut."""
-    module = module_loader.loaded_modules[module_name]
-    return {
-        'name': shortcut['name'],
-        'short_description': shortcut['short_description'],
-        'description': shortcut['details'],
-        'icon_url': _get_icon_url(shortcut['icon']),
-        'clients': getattr(module, 'clients', None)
+    shortcut_data = {
+        'name': shortcut.name,
+        'short_description': shortcut.short_description,
+        'description': shortcut.description,
+        'icon_url': _get_icon_url(shortcut.app_id, shortcut.icon),
+        'clients': copy.deepcopy(shortcut.clients),
     }
+    # XXX: Fix the hardcoding
+    if shortcut.name.startswith('shortcut-ikiwiki-'):
+        shortcut_data['clients'][0]['platforms'][0]['url'] += '/{}'.format(
+            shortcut['name'])
+    return shortcut_data
 
 
-def _get_icon_url(icon_name):
-    """Return icon path given icon name."""
+def _get_icon_url(app_id, icon_name):
+    """Return icon path given app's ID and icon name."""
     if not icon_name:
         return None
 
-    return static('static/theme/icons/{}.png'.format(icon_name))
+    if app_id:
+        return static(f'{app_id}') + f'/icons/{icon_name}.png'
+
+    return static(f'theme/icons/{icon_name}.png')

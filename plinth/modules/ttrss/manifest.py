@@ -1,41 +1,63 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth.clients import store_url, validate
+from plinth.clients import store_url
 
-_package_id = 'org.ttrssreader'
+clients = [
+    {
+        'name':
+            _('Tiny Tiny RSS (TTTRSS)'),
+        'platforms': [{
+            'type': 'store',
+            'os': 'android',
+            'store_name': 'f-droid',
+            'url': store_url('f-droid', 'org.fox.tttrss')
+        }]
+    },
+    {
+        'name':
+            _('TTRSS-Reader'),
+        'platforms': [{
+            'type': 'store',
+            'os': 'android',
+            'store_name': 'google-play',
+            'url': store_url('google-play', 'org.ttrssreader')
+        }, {
+            'type': 'store',
+            'os': 'android',
+            'store_name': 'f-droid',
+            'url': store_url('f-droid', 'org.ttrssreader')
+        }]
+    },
+    {
+        'name':
+            _('Geekttrss'),
+        'platforms': [{
+            'type': 'store',
+            'os': 'android',
+            'store_name': 'google-play',
+            'url': store_url('google-play', 'com.geekorum.ttrss')
+        }]
+    },
+    {
+        'name': _('Tiny Tiny RSS'),
+        'platforms': [{
+            'type': 'web',
+            'url': '/tt-rss'
+        }]
+    },
+]
 
-clients = validate([{
-    'name':
-        _('TT-RSS Reader'),
-    'platforms': [{
-        'type': 'store',
-        'os': 'android',
-        'store_name': 'google-play',
-        'url': store_url('google-play', _package_id),
-    }, {
-        'type': 'store',
-        'os': 'android',
-        'store_name': 'f-droid',
-        'url': store_url('f-droid', _package_id),
-    }, {
-        'type': 'web',
-        'url': '/tt-rss'
-    }]
-}])
+backup = {
+    'data': {
+        'files': ['/var/lib/plinth/backups-data/ttrss-database.sql']
+    },
+    'secrets': {
+        'files': [
+            '/etc/tt-rss/database.php',
+            '/etc/dbconfig-common/tt-rss.conf',
+        ]
+    },
+    'services': ['tt-rss']
+}

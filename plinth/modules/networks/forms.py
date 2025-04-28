@@ -1,34 +1,19 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
 from django import forms
 from django.core import validators
-from django.utils.translation import ugettext_lazy as _, ugettext_lazy
+from django.utils.translation import gettext_lazy as _
 
-from plinth import cfg
-from plinth import network
+from plinth import cfg, network
 from plinth.utils import format_lazy, import_from_gi
+
 nm = import_from_gi('NM', '1.0')
 
 
 class ConnectionTypeSelectForm(forms.Form):
     """Form to select type for new connection."""
     connection_type = forms.ChoiceField(
-        label=_('Connection Type'),
+        label=_('Connection Type'), widget=forms.RadioSelect,
         choices=[(key, value)
                  for key, value in network.CONNECTION_TYPE_NAMES.items()])
 
@@ -37,108 +22,100 @@ class ConnectionForm(forms.Form):
     """Base form to create/edit a connection."""
     name = forms.CharField(label=_('Connection Name'))
     interface = forms.ChoiceField(
-        label=_('Physical Interface'),
-        choices=(),
+        label=_('Network Interface'), choices=(),
         help_text=_('The network device that this connection should be bound '
                     'to.'))
     zone = forms.ChoiceField(
         label=_('Firewall Zone'),
         help_text=_('The firewall zone will control which services are '
                     'available over this interfaces. Select Internal only '
-                    'for trusted networks.'),
-        choices=[('external', _('External')),
-                 ('internal', _('Internal'))])
+                    'for trusted networks.'), choices=network.ZONES)
     ipv4_method = forms.ChoiceField(
-        label=_('IPv4 Addressing Method'),
-        help_text=format_lazy(
-            ugettext_lazy(
-                '"Automatic" method will make {box_name} acquire '
-                'configuration from this network making it a client. "Shared" '
-                'method will make {box_name} act as a router, configure '
-                'clients on this network and share its Internet connection.'),
-            box_name=ugettext_lazy(cfg.box_name)),
-        choices=[('auto', _('Automatic (DHCP)')),
-                 ('shared', _('Shared')),
-                 ('manual', _('Manual')),
-                 ('disabled', _('Disabled'))])
+        label=_('IPv4 Addressing Method'), widget=forms.RadioSelect, choices=[
+            ('auto',
+             _('Automatic (DHCP): Configure automatically, use Internet '
+               'connection from this network')),
+            ('shared',
+             _('Shared: Act as a router, provide Internet connection to other '
+               'devices on this network')),
+            ('manual',
+             _('Manual: Use manually specified parameters, use Internet '
+               'connection from this network')),
+            ('disabled',
+             _('Disabled: Do not configure this addressing method')),
+        ], initial='auto')
+
     ipv4_address = forms.CharField(
-        label=_('Address'),
-        validators=[validators.validate_ipv4_address],
+        label=_('Address'), validators=[validators.validate_ipv4_address],
         required=False)
     ipv4_netmask = forms.CharField(
         label=_('Netmask'),
         help_text=_('Optional value. If left blank, a default netmask '
                     'based on the address will be used.'),
-        validators=[validators.validate_ipv4_address],
-        required=False)
+        validators=[validators.validate_ipv4_address], required=False)
     ipv4_gateway = forms.CharField(
-        label=_('Gateway'),
-        help_text=_('Optional value.'),
-        validators=[validators.validate_ipv4_address],
-        required=False)
+        label=_('Gateway'), help_text=_('Optional value.'),
+        validators=[validators.validate_ipv4_address], required=False)
     ipv4_dns = forms.CharField(
         label=_('DNS Server'),
         help_text=_('Optional value. If this value is given and IPv4 '
                     'addressing method is "Automatic", the DNS Servers '
                     'provided by a DHCP server will be ignored.'),
-        validators=[validators.validate_ipv4_address],
-        required=False)
+        validators=[validators.validate_ipv4_address], required=False)
     ipv4_second_dns = forms.CharField(
         label=_('Second DNS Server'),
         help_text=_('Optional value. If this value is given and IPv4 '
                     'Addressing Method is "Automatic", the DNS Servers '
                     'provided by a DHCP server will be ignored.'),
-        validators=[validators.validate_ipv4_address],
-        required=False)
+        validators=[validators.validate_ipv4_address], required=False)
     ipv6_method = forms.ChoiceField(
-        label=_('IPv6 Addressing Method'),
-        help_text=format_lazy(
-            ugettext_lazy(
-                '"Automatic" methods will make {box_name} acquire '
-                'configuration from this network making it a client.'),
-            box_name=ugettext_lazy(cfg.box_name)),
-        choices=[('auto', _('Automatic')),
-                 ('dhcp', _('Automatic, DHCP only')),
-                 ('manual', _('Manual')),
-                 ('ignore', _('Ignore'))])
+        label=_('IPv6 Addressing Method'), widget=forms.RadioSelect, choices=[
+            ('auto',
+             _('Automatic: Configure automatically, use Internet connection '
+               'from this network')),
+            ('dhcp',
+             _('Automatic (DHCP only): Configure automatically, use Internet '
+               'connection from this network')),
+            ('manual',
+             _('Manual: Use manually specified parameters, use Internet '
+               'connection from this network')),
+            ('ignore', _('Ignore: Ignore this addressing method')),
+        ])
     ipv6_address = forms.CharField(
-        label=_('Address'),
-        validators=[validators.validate_ipv6_address],
+        label=_('Address'), validators=[validators.validate_ipv6_address],
         required=False)
-    ipv6_prefix = forms.IntegerField(
-        label=_('Prefix'),
-        help_text=_('Value between 1 and 128.'),
-        min_value=1,
-        max_value=128,
-        required=False)
+    ipv6_prefix = forms.IntegerField(label=_('Prefix'),
+                                     help_text=_('Value between 1 and 128.'),
+                                     min_value=1, max_value=128,
+                                     required=False)
     ipv6_gateway = forms.CharField(
-        label=_('Gateway'),
-        help_text=_('Optional value.'),
-        validators=[validators.validate_ipv6_address],
-        required=False)
+        label=_('Gateway'), help_text=_('Optional value.'),
+        validators=[validators.validate_ipv6_address], required=False)
     ipv6_dns = forms.CharField(
         label=_('DNS Server'),
         help_text=_('Optional value. If this value is given and IPv6 '
                     'addressing method is "Automatic", the DNS Servers '
                     'provided by a DHCP server will be ignored.'),
-        validators=[validators.validate_ipv6_address],
-        required=False)
+        validators=[validators.validate_ipv6_address], required=False)
     ipv6_second_dns = forms.CharField(
         label=_('Second DNS Server'),
         help_text=_('Optional value. If this value is given and IPv6 '
                     'Addressing Method is "Automatic", the DNS Servers '
                     'provided by a DHCP server will be ignored.'),
-        validators=[validators.validate_ipv6_address],
-        required=False)
+        validators=[validators.validate_ipv6_address], required=False)
 
     @staticmethod
     def _get_interface_choices(device_type):
         """Return a list of choices for a given device type."""
         interfaces = network.get_interface_list(device_type)
+        # Support for virtual Ethernet devices used in containers
+        if device_type == nm.DeviceType.ETHERNET:
+            interfaces.update(network.get_interface_list(nm.DeviceType.VETH))
+
         choices = [('', _('-- select --'))]
         for interface, mac in interfaces.items():
-            display_string = '{interface} ({mac})'.format(interface=interface,
-                                                          mac=mac)
+            display_string = '{interface} ({mac})'.format(
+                interface=interface, mac=mac)
             choices.append((interface, display_string))
 
         return choices
@@ -182,9 +159,10 @@ class ConnectionForm(forms.Form):
 
 class GenericForm(ConnectionForm):
     """Form to create/edit a generic connection."""
+
     def __init__(self, *args, **kwargs):
         """Initialize the form, populate interface choices."""
-        super(GenericForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         choices = self._get_interface_choices(nm.DeviceType.GENERIC)
         self.fields['interface'].choices = choices
 
@@ -197,9 +175,10 @@ class GenericForm(ConnectionForm):
 
 class EthernetForm(ConnectionForm):
     """Form to create/edit a ethernet connection."""
+
     def __init__(self, *args, **kwargs):
         """Initialize the form, populate interface choices."""
-        super(EthernetForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         choices = self._get_interface_choices(nm.DeviceType.ETHERNET)
         self.fields['interface'].choices = choices
 
@@ -252,33 +231,29 @@ class PPPoEForm(EthernetForm):
 
 class WifiForm(ConnectionForm):
     """Form to create/edit a Wi-Fi connection."""
-    field_order = ['name', 'interface', 'zone', 'ssid', 'mode', 'band',
-                   'channel', 'bssid', 'auth_mode', 'passphrase',
-                   'ipv4_method', 'ipv4_address', 'ipv4_netmask',
-                   'ipv4_gateway', 'ipv4_dns', 'ipv4_second_dns',
-                   'ipv6_method', 'ipv6_address', 'ipv6_prefix',
-                   'ipv6_gateway', 'ipv6_dns', 'ipv6_second_dns']
+    field_order = [
+        'name', 'interface', 'zone', 'ssid', 'mode', 'band', 'channel',
+        'bssid', 'auth_mode', 'passphrase', 'ipv4_method', 'ipv4_address',
+        'ipv4_netmask', 'ipv4_gateway', 'ipv4_dns', 'ipv4_second_dns',
+        'ipv6_method', 'ipv6_address', 'ipv6_prefix', 'ipv6_gateway',
+        'ipv6_dns', 'ipv6_second_dns'
+    ]
 
-    ssid = forms.CharField(
-        label=_('SSID'),
-        help_text=_('The visible name of the network.'))
+    ssid = forms.CharField(label=_('SSID'),
+                           help_text=_('The visible name of the network.'))
     mode = forms.ChoiceField(
-        label=_('Mode'),
-        choices=[('infrastructure', _('Infrastructure')),
-                 ('ap', _('Access Point')),
-                 ('adhoc', _('Ad-hoc'))])
+        label=_('Mode'), choices=[('infrastructure', _('Infrastructure')),
+                                  ('ap', _('Access Point')),
+                                  ('adhoc', _('Ad-hoc'))])
     band = forms.ChoiceField(
-        label=_('Frequency Band'),
-        choices=[('auto', _('Automatic')),
-                 ('a', _('A (5 GHz)')),
-                 ('bg', _('B/G (2.4 GHz)'))])
+        label=_('Frequency Band'), choices=[('auto', _('Automatic')),
+                                            ('a', _('A (5 GHz)')),
+                                            ('bg', _('B/G (2.4 GHz)'))])
     channel = forms.IntegerField(
         label=_('Channel'),
         help_text=_('Optional value. Wireless channel in the selected '
                     'frequency band to restrict to. Blank or 0 value means '
-                    'automatic selection.'),
-        min_value=0,
-        max_value=255,
+                    'automatic selection.'), min_value=0, max_value=255,
         required=False)
     bssid = forms.RegexField(
         label=_('BSSID'),
@@ -286,22 +261,19 @@ class WifiForm(ConnectionForm):
                     'When connecting to an access point, connect only if the '
                     'BSSID of the access point matches the one provided. '
                     'Example: 00:11:22:aa:bb:cc.'),
-        regex=r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$',
-        required=False)
+        regex=r'^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$', required=False)
     auth_mode = forms.ChoiceField(
         label=_('Authentication Mode'),
         help_text=_('Select WPA if the wireless network is secured and \
 requires clients to have the password to connect.'),
-        choices=[('wpa', _('WPA')),
-                 ('open', _('Open'))])
-    passphrase = forms.CharField(
-        label=_('Passphrase'),
-        validators=[validators.MinLengthValidator(8)],
-        required=False)
+        choices=[('wpa', _('WPA')), ('open', _('Open'))])
+    passphrase = forms.CharField(label=_('Passphrase'),
+                                 validators=[validators.MinLengthValidator(8)],
+                                 required=False)
 
     def __init__(self, *args, **kwargs):
         """Initialize the form, populate interface choices."""
-        super(WifiForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         choices = self._get_interface_choices(nm.DeviceType.WIFI)
         self.fields['interface'].choices = choices
 
@@ -319,3 +291,156 @@ requires clients to have the password to connect.'),
             'passphrase': self.cleaned_data['passphrase'],
         }
         return settings
+
+
+class NetworkTopologyForm(forms.Form):
+    """Form to ask the user for network topology.
+
+    That is how the FreedomBox is connected to the internal network topology.
+    Store this information for future suggestions when setting up services.
+
+    """
+    network_topology = forms.ChoiceField(
+        label=format_lazy(
+            _('Specify how your {box_name} is connected to your network'),
+            box_name=cfg.box_name),
+        required=True,
+        widget=forms.RadioSelect,
+        choices=[
+            ('to_router',
+             format_lazy(
+                 _('Connected to a router '
+                   '<p class="help-block">Your {box_name} gets its Internet '
+                   'connection from your router via Wi-Fi or Ethernet cable. '
+                   'This is a typical home setup.</p>'), box_name=cfg.box_name,
+                 allow_markup=True)),
+            ('as_router',
+             format_lazy(
+                 _('{box_name} is your router '
+                   '<p class="help-block">Your {box_name} has multiple '
+                   'network interfaces such as multiple Ethernet ports or '
+                   'a Wi-Fi adapter. {box_name} is directly connected to the '
+                   'Internet and all your devices connect to {box_name} '
+                   'for their Internet connectivity.</p>'),
+                 box_name=cfg.box_name, allow_markup=True)),
+            ('direct',
+             format_lazy(
+                 _('Directly connected to the Internet '
+                   '<p class="help-block">Your Internet connection is '
+                   'directly attached to your {box_name} and there are no '
+                   'other devices on the network. This can happen on '
+                   'community or cloud setups.</p>'), box_name=cfg.box_name,
+                 allow_markup=True)),
+        ],
+    )
+
+
+class InternetConnectionTypeForm(forms.Form):
+    """Form for type of public/private IP address ISP provides.
+
+    Ask the user for what type of Internet connection they have. We store this
+    information and use it suggest various setup options during the setup
+    process and also later on when setting up apps.
+
+    """
+    internet_connection_type = forms.ChoiceField(
+        label=_('Choose your internet connection type'),
+        choices=[
+            ('dynamic_public_ip',
+             format_lazy(
+                 _('I have a public IP address that may change over time'
+                   '<p class="help-block">This means that devices on the '
+                   'Internet can reach you when you are connected to the '
+                   'Internet. Every time you connect to the Internet with '
+                   'your Internet Service Provider (ISP), you may get a '
+                   'different IP address, especially after some offline time. '
+                   'Many ISPs offer this type of connectivity. If you have a '
+                   'public IP address but are unsure if it changes over time '
+                   'or not, it is safer to choose this option.</p>'),
+                 allow_markup=True)),
+            ('static_public_ip',
+             format_lazy(
+                 _('I have a public IP address that does not change over time '
+                   '(recommended)'
+                   '<p class="help-block">This means that devices on the '
+                   'Internet can reach you when you are connected to the '
+                   'Internet. Every time you connect to the Internet with '
+                   'your Internet Service Provider (ISP), you always get the '
+                   'same IP address. This is the most trouble-free setup for '
+                   'many {box_name} services but very few ISPs offer this. '
+                   'You may be able to get this service from your ISP by '
+                   'making an additional payment.</p>'), box_name=cfg.box_name,
+                 allow_markup=True)),
+            ('private_ip',
+             format_lazy(
+                 _('I dont have a public IP address'
+                   '<p class="help-block">This means that devices on the '
+                   'Internet <b>can not</b> reach you when you are connected '
+                   'to the Internet. Every time you connect to the Internet '
+                   'with your Internet Service Provider (ISP), you get an IP '
+                   'address that is only relevant for local networks. '
+                   'Many ISPs offer this type of connectivity. This is the '
+                   'most troublesome situation for hosting services at home. '
+                   '{box_name} provides many workaround solutions but each '
+                   'solution has some limitations.</p>'),
+                 box_name=cfg.box_name, allow_markup=True)),
+            ('unknown',
+             format_lazy(
+                 _('I do not know the type of connection my ISP provides '
+                   '<p class="help-block">You will be suggested the most '
+                   'conservative actions.</p>'), allow_markup=True)),
+        ],
+        required=True,
+        widget=forms.RadioSelect,
+    )
+
+
+class RouterConfigurationForm(forms.Form):
+    """Form to suggest how to configure a router.
+
+    Suggest depending on wan connectivity/specific setup. The choice will
+    affect future suggestions during the setup process and other apps.
+
+    """
+    router_config = forms.ChoiceField(
+        label=_('Preferred router configuration'),
+        choices=[
+            (
+                'dmz',
+                format_lazy(
+                    _('Use DMZ feature to forward all traffic (recommended) '
+                      '<p class="help-block">Most routers provide a '
+                      'configuration setting called DMZ. This will allow the '
+                      'router to forward all incoming traffic from the '
+                      'Internet to a single IP address such as the '
+                      '{box_name}\'s IP address. First remember to configure '
+                      'a static local IP address for your {box_name} in your '
+                      'router\'s configuration.</p>'), box_name=cfg.box_name,
+                    allow_markup=True),
+            ),
+            ('port_forwarding',
+             format_lazy(
+                 _('Forward specific traffic as needed by each '
+                   'application '
+                   '<p class="help-block">You may alternatively choose to '
+                   'forward only specific traffic to your {box_name}. '
+                   'This is ideal if you have other servers like '
+                   '{box_name} in your network or if your router does not '
+                   'support DMZ feature. All applications that provide a '
+                   'web interface need you to forward traffic from ports '
+                   '80 and 443 to work. Each of the other applications '
+                   'will suggest which port(s) need to be forwarded '
+                   'for that application to work.</p>'), box_name=cfg.box_name,
+                 allow_markup=True)),
+            ('not_configured',
+             format_lazy(
+                 _('Router is currently unconfigured '
+                   '<p class="help-block">Choose this if you have not '
+                   'configured or are unable to configure the router '
+                   'currently and wish to be reminded later. Some of '
+                   'the other configuration steps may fail.</p>'),
+                 allow_markup=True)),
+        ],
+        required=True,
+        widget=forms.RadioSelect,
+    )

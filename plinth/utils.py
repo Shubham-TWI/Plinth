@@ -1,33 +1,20 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Miscellaneous utility methods.
 """
 
+import gzip
 import importlib
 import os
 import random
 import re
 import string
 
+import markupsafe
+import ruamel.yaml
 from django.utils.functional import lazy
 
-import ruamel.yaml
-from plinth.modules import names
+from plinth.version import Version  # noqa
 
 
 def import_from_gi(library, version):
@@ -46,17 +33,46 @@ def import_from_gi(library, version):
 
 def _format_lazy(string, *args, **kwargs):
     """Lazily format a lazy string."""
+    allow_markup = kwargs.pop('allow_markup', False)
     string = str(string)
-    return string.format(*args, **kwargs)
+    string = string.format(*args, **kwargs)
+    if allow_markup:
+        string = markupsafe.Markup(string)
+
+    return string
 
 
 format_lazy = lazy(_format_lazy, str)
 
 
 def non_admin_view(func):
-    """Decorator to mark a view as accesible by non-admin users."""
+    """Decorator to mark a view as accessible by non-admin users."""
     setattr(func, 'IS_NON_ADMIN', True)
     return func
+
+
+def user_group_view(func, group_name):
+    """Decorator to mark a view as accessible by admin or group users."""
+    setattr(func, 'GROUP_NAME', group_name)
+    return func
+
+
+def is_valid_user_name(user_name):
+    """Check if the given username is valid.
+
+    Note: Debian is VERY flexible with user names.
+    """
+    if 32 < len(user_name):
+        return False
+
+    if user_name.startswith('-'):
+        return False
+
+    for forbidden in (' \n\t/\\:'):
+        if forbidden in user_name:
+            return False
+
+    return True
 
 
 def is_user_admin(request, cached=False):
@@ -72,56 +88,45 @@ def is_user_admin(request, cached=False):
     return user_is_admin
 
 
-def get_domain_names():
-    """Return the domain name(s)"""
-    domain_names = []
-
-    for domain_type, domains in names.domains.items():
-        if domain_type == 'hiddenservice':
-            continue
-        for domain in domains:
-            domain_names.append((domain, domain))
-
-    return domain_names
-
-
-class YAMLFile(object):
+class YAMLFile:
     """A context management class for updating YAML files"""
 
-    def __init__(self, yaml_file, post_exit=None):
+    def __init__(self, yaml_file):
         """Return a context object for the YAML file.
 
         Parameters:
         yaml_file - the YAML file to update.
-        post_exit - a function that will be called after
         updating the YAML file.
         """
         self.yaml_file = yaml_file
-        self.post_exit = post_exit
         self.conf = None
 
+        self.yaml = ruamel.yaml.YAML()
+        self.yaml.preserve_quotes = True
+
     def __enter__(self):
-        with open(self.yaml_file, 'r') as intro_conf:
+        with open(self.yaml_file, 'r', encoding='utf-8') as intro_conf:
             if not self.is_file_empty():
-                self.conf = ruamel.yaml.round_trip_load(intro_conf)
+                self.conf = self.yaml.load(intro_conf)
             else:
                 self.conf = {}
 
             return self.conf
 
-    def __exit__(self, typ, value, traceback):
-        with open(self.yaml_file, 'w') as intro_conf:
-            ruamel.yaml.round_trip_dump(self.conf, intro_conf)
-
-        if self.post_exit:
-            self.post_exit()
+    def __exit__(self, type_, value, traceback):
+        if not traceback:
+            with open(self.yaml_file, 'w', encoding='utf-8') as intro_conf:
+                self.yaml.dump(self.conf, intro_conf)
 
     def is_file_empty(self):
         return os.stat(self.yaml_file).st_size == 0
 
 
-def yes_or_no(cond):
-    return 'yes' if cond else 'no'
+def random_string(size=8):
+    """Generate a random alphanumeric string."""
+    chars = (random.SystemRandom().choice(string.ascii_letters)
+             for _ in range(size))
+    return ''.join(chars)
 
 
 def generate_password(size=32):
@@ -134,5 +139,49 @@ def generate_password(size=32):
 def grep(pattern, file_name):
     """Return lines of a file matching a pattern."""
     return [
-        line.rstrip() for line in open(file_name) if re.search(pattern, line)
+        line.rstrip() for line in open(file_name, encoding='utf-8')
+        if re.search(pattern, line)
     ]
+
+
+def gunzip(gzip_file, output_file):
+    """Utility to unzip a given gzip file and write it to an output file
+
+    gzip_file: string path to a gzip file
+    output_file: string path to the output file
+    mode: an octal number to specify file permissions
+    """
+    output_dir = os.path.dirname(output_file)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, mode=0o755)
+
+    with gzip.open(gzip_file, 'rb') as file_handle:
+        contents = file_handle.read()
+
+    def opener(path, flags):
+        return os.open(path, flags, mode=0o644)
+
+    with open(output_file, 'wb', opener=opener) as file_handle:
+        file_handle.write(contents)
+
+
+def is_non_empty_file(file_path):
+    return os.path.isfile(file_path) and os.path.getsize(file_path) > 0
+
+
+def is_authenticated_user(username, password):
+    """Return true if the user authentication succeeds."""
+    import pam  # Minimize dependencies for running tests
+    pam_authenticator = pam.pam()
+    return bool(pam_authenticator.authenticate(username, password))
+
+
+class SafeFormatter(string.Formatter):
+    """A string.format() handler to deal with missing arguments."""
+
+    def get_value(self, key, args, kwargs):
+        """Retrieve a given field value."""
+        try:
+            return super().get_value(key, args, kwargs)
+        except (IndexError, KeyError):
+            return f'?{key}?'

@@ -1,33 +1,15 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Test module for network configuration utilities.
 """
 
 import copy
-import os
+import threading
 import time
-import unittest
 
+import pytest
 
-euid = os.geteuid()
-if euid == 0:
-    from plinth import network
+from plinth.utils import import_from_gi
 
 ethernet_settings = {
     'common': {
@@ -89,239 +71,278 @@ pppoe_settings = {
 }
 
 
-class TestNetwork(unittest.TestCase):
-    """Verify that the network module performs as expected."""
+@pytest.fixture(autouse=True, scope='module')
+def fixture_network_module_init():
+    """Initialize network module in a separate thread."""
+    from plinth import network as network_module
+    glib = import_from_gi('GLib', '2.0')
+    main_loop = glib.MainLoop()
 
-    ethernet_uuid = None
-    wifi_uuid = None
-    pppoe_uuid = None
+    def main_loop_runner():
+        """Initialize the network module and run glib main loop until quit."""
+        network_module.init()
+        main_loop.run()
 
-    @classmethod
-    def setUp(cls):
-        cls.ethernet_uuid = network.add_connection(ethernet_settings)
-        cls.wifi_uuid = network.add_connection(wifi_settings)
-        cls.pppoe_uuid = network.add_connection(pppoe_settings)
-        # XXX: Handle this properly by waiting for asynchronous add_connection
-        # to complete.
+    thread = threading.Thread(target=main_loop_runner)
+    thread.start()
+
+    while not network_module._client:
         time.sleep(0.1)
 
-    @classmethod
-    def tearDown(cls):
-        network.delete_connection(cls.ethernet_uuid)
-        network.delete_connection(cls.wifi_uuid)
-        network.delete_connection(cls.pppoe_uuid)
+    yield
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_get_connection_list(self):
-        """Check that we can get a list of available connections."""
-        connections = network.get_connection_list()
+    if main_loop:
+        main_loop.quit()
 
-        self.assertTrue('plinth_test_eth' in [x['name'] for x in connections])
-        self.assertTrue('plinth_test_wifi' in [x['name'] for x in connections])
-        self.assertTrue('plinth_test_pppoe' in
-                        [x['name'] for x in connections])
+    thread.join()
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_get_connection(self):
-        """Check that we can get a connection by name."""
-        connection = network.get_connection(self.ethernet_uuid)
-        self.assertEqual(
-            connection.get_id(), 'plinth_test_eth')
 
-        connection = network.get_connection(self.wifi_uuid)
-        self.assertEqual(
-            connection.get_id(), 'plinth_test_wifi')
+@pytest.fixture(name='network')
+def fixture_network(needs_root):
+    """Return the network module. Load it conservatively."""
+    from plinth import network as network_module
+    return network_module
 
-        self.assertRaises(network.ConnectionNotFound, network.get_connection,
-                          'x-invalid-network-id')
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_edit_ethernet_connection(self):
-        """Check that we can update an ethernet connection."""
-        connection = network.get_connection(self.ethernet_uuid)
-        ethernet_settings2 = copy.deepcopy(ethernet_settings)
-        ethernet_settings2['common']['name'] = 'plinth_test_eth_new'
-        ethernet_settings2['common']['interface'] = 'eth1'
-        ethernet_settings2['common']['zone'] = 'external'
-        ethernet_settings2['ipv4']['method'] = 'auto'
-        network.edit_connection(connection, ethernet_settings2)
+def _connection(network, settings):
+    """Create, yield and delete a connection."""
+    uuid = network.add_connection(settings)
+    time.sleep(0.1)
+    yield uuid
+    time.sleep(0.1)
+    network.delete_connection(uuid)
 
-        connection = network.get_connection(self.ethernet_uuid)
-        self.assertEqual(connection.get_id(), 'plinth_test_eth_new')
 
-        settings_connection = connection.get_setting_connection()
-        self.assertEqual(settings_connection.get_interface_name(), 'eth1')
-        self.assertEqual(settings_connection.get_zone(), 'external')
+@pytest.fixture(name='ethernet_uuid')
+def fixture_ethernet_uuid(network):
+    """Test fixture to setup and teardown an Ethernet connection."""
+    yield from _connection(network, ethernet_settings)
 
-        settings_ipv4 = connection.get_setting_ip4_config()
-        self.assertEqual(settings_ipv4.get_method(), 'auto')
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_edit_pppoe_connection(self):
-        """Check that we can update a PPPoE connection."""
-        connection = network.get_connection(self.ethernet_uuid)
-        pppoe_settings2 = copy.deepcopy(pppoe_settings)
-        pppoe_settings2['common']['name'] = 'plinth_test_pppoe_new'
-        pppoe_settings2['common']['interface'] = 'eth2'
-        pppoe_settings2['common']['zone'] = 'external'
-        pppoe_settings2['pppoe']['username'] = 'x-user-new'
-        pppoe_settings2['pppoe']['password'] = 'x-password-new'
-        network.edit_connection(connection, pppoe_settings2)
+@pytest.fixture(name='wifi_uuid')
+def fixture_wifi_uuid(network):
+    """Test fixture to setup and teardown an Wi-Fi connection."""
+    yield from _connection(network, wifi_settings)
 
-        connection = network.get_connection(self.ethernet_uuid)
-        self.assertEqual(connection.get_id(), 'plinth_test_pppoe_new')
 
-        settings_connection = connection.get_setting_connection()
-        self.assertEqual(settings_connection.get_interface_name(), 'eth2')
-        self.assertEqual(settings_connection.get_zone(), 'external')
+@pytest.fixture(name='pppoe_uuid')
+def fixture_pppoe_uuid(network):
+    """Test fixture to setup and teardown an PPPoE connection."""
+    yield from _connection(network, pppoe_settings)
 
-        settings_pppoe = connection.get_setting_pppoe()
-        self.assertEqual(settings_pppoe.get_username(), 'x-user-new')
-        secrets = connection.get_secrets('pppoe')
-        self.assertEqual(secrets['pppoe']['password'], 'x-password-new')
 
-        settings_ppp = connection.get_setting_ppp()
-        self.assertEqual(settings_ppp.get_lcp_echo_failure(), 5)
-        self.assertEqual(settings_ppp.get_lcp_echo_interval(), 30)
+@pytest.mark.usefixtures('ethernet_uuid', 'wifi_uuid', 'pppoe_uuid')
+def test_get_connection_list(network):
+    """Check that we can get a list of available connections."""
+    connections = network.get_connection_list()
+    connection_names = [conn['name'] for conn in connections]
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_edit_wifi_connection(self):
-        """Check that we can update a wifi connection."""
-        connection = network.get_connection(self.wifi_uuid)
-        wifi_settings2 = copy.deepcopy(wifi_settings)
-        wifi_settings2['common']['name'] = 'plinth_test_wifi_new'
-        wifi_settings2['common']['interface'] = 'wlan1'
-        wifi_settings2['common']['zone'] = 'external'
-        wifi_settings2['ipv4']['method'] = 'auto'
-        wifi_settings2['wireless']['ssid'] = 'plinthtestwifi2'
-        wifi_settings2['wireless']['mode'] = 'infrastructure'
-        wifi_settings2['wireless']['auth_mode'] = 'wpa'
-        wifi_settings2['wireless']['passphrase'] = 'secretpassword'
-        network.edit_connection(connection, wifi_settings2)
+    assert 'plinth_test_eth' in connection_names
+    assert 'plinth_test_wifi' in connection_names
+    assert 'plinth_test_pppoe' in connection_names
 
-        connection = network.get_connection(self.wifi_uuid)
 
-        self.assertEqual(connection.get_id(), 'plinth_test_wifi_new')
+def test_get_connection(network, ethernet_uuid, wifi_uuid):
+    """Check that we can get a connection by name."""
+    connection = network.get_connection(ethernet_uuid)
+    assert connection.get_id() == 'plinth_test_eth'
 
-        settings_connection = connection.get_setting_connection()
-        self.assertEqual(settings_connection.get_interface_name(), 'wlan1')
-        self.assertEqual(settings_connection.get_zone(), 'external')
+    connection = network.get_connection(wifi_uuid)
+    assert connection.get_id() == 'plinth_test_wifi'
 
-        settings_wireless = connection.get_setting_wireless()
-        self.assertEqual(settings_wireless.get_ssid().get_data(),
-                         b'plinthtestwifi2')
-        self.assertEqual(settings_wireless.get_mode(), 'infrastructure')
+    with pytest.raises(network.ConnectionNotFound):
+        network.get_connection('x-invalid-network-id')
 
-        wifi_sec = connection.get_setting_wireless_security()
-        self.assertEqual(wifi_sec.get_key_mgmt(), 'wpa-psk')
 
-        secrets = connection.get_secrets('802-11-wireless-security')
-        self.assertEqual(
-            secrets['802-11-wireless-security']['psk'],
-            'secretpassword')
+def test_edit_ethernet_connection(network, ethernet_uuid):
+    """Check that we can update an ethernet connection."""
+    connection = network.get_connection(ethernet_uuid)
+    ethernet_settings2 = copy.deepcopy(ethernet_settings)
+    ethernet_settings2['common']['name'] = 'plinth_test_eth_new'
+    ethernet_settings2['common']['interface'] = 'eth1'
+    ethernet_settings2['common']['zone'] = 'external'
+    ethernet_settings2['common']['autoconnect'] = False
+    ethernet_settings2['ipv4']['method'] = 'auto'
+    network.edit_connection(connection, ethernet_settings2)
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_ethernet_manual_ipv4_address(self):
-        """Check that we can manually set IPv4 address on ethernet."""
-        connection = network.get_connection(self.ethernet_uuid)
-        ethernet_settings2 = copy.deepcopy(ethernet_settings)
-        ethernet_settings2['ipv4']['method'] = 'manual'
-        ethernet_settings2['ipv4']['address'] = '169.254.0.1'
-        ethernet_settings2['ipv4']['netmask'] = '255.255.254.0'
-        ethernet_settings2['ipv4']['gateway'] = '169.254.0.254'
-        ethernet_settings2['ipv4']['dns'] = '1.2.3.4'
-        ethernet_settings2['ipv4']['second_dns'] = '1.2.3.5'
-        network.edit_connection(connection, ethernet_settings2)
+    connection = network.get_connection(ethernet_uuid)
+    assert connection.get_id() == 'plinth_test_eth_new'
 
-        connection = network.get_connection(self.ethernet_uuid)
-        settings_ipv4 = connection.get_setting_ip4_config()
-        self.assertEqual(settings_ipv4.get_method(), 'manual')
+    settings_connection = connection.get_setting_connection()
+    assert settings_connection.get_interface_name() == 'eth1'
+    assert settings_connection.get_zone() == 'external'
+    assert not settings_connection.get_autoconnect()
 
-        address = settings_ipv4.get_address(0)
-        self.assertEqual(address.get_address(), '169.254.0.1')
-        self.assertEqual(address.get_prefix(), 23)
-        self.assertEqual(settings_ipv4.get_gateway(), '169.254.0.254')
-        self.assertEqual(settings_ipv4.get_num_dns(), 2)
-        self.assertEqual(settings_ipv4.get_dns(0), '1.2.3.4')
-        self.assertEqual(settings_ipv4.get_dns(1), '1.2.3.5')
+    settings_ipv4 = connection.get_setting_ip4_config()
+    assert settings_ipv4.get_method() == 'auto'
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_ethernet_manual_ipv6_address(self):
-        """Check that we can manually set IPv6 address on ethernet."""
-        connection = network.get_connection(self.ethernet_uuid)
-        ethernet_settings2 = copy.deepcopy(ethernet_settings)
-        ethernet_settings2['ipv6']['method'] = 'manual'
-        ethernet_settings2['ipv6']['address'] = '::ffff:169.254.0.1'
-        ethernet_settings2['ipv6']['prefix'] = '63'
-        ethernet_settings2['ipv6']['gateway'] = '::ffff:169.254.0.254'
-        ethernet_settings2['ipv6']['dns'] = '::ffff:1.2.3.4'
-        ethernet_settings2['ipv6']['second_dns'] = '::ffff:1.2.3.5'
-        network.edit_connection(connection, ethernet_settings2)
 
-        connection = network.get_connection(self.ethernet_uuid)
-        settings_ipv6 = connection.get_setting_ip6_config()
-        self.assertEqual(settings_ipv6.get_method(), 'manual')
+def test_edit_pppoe_connection(network, pppoe_uuid):
+    """Check that we can update a PPPoE connection."""
+    connection = network.get_connection(pppoe_uuid)
+    pppoe_settings2 = copy.deepcopy(pppoe_settings)
+    pppoe_settings2['common']['name'] = 'plinth_test_pppoe_new'
+    pppoe_settings2['common']['interface'] = 'eth2'
+    pppoe_settings2['common']['zone'] = 'external'
+    pppoe_settings2['common']['autoconnect'] = False
+    pppoe_settings2['pppoe']['username'] = 'x-user-new'
+    pppoe_settings2['pppoe']['password'] = 'x-password-new'
+    network.edit_connection(connection, pppoe_settings2)
 
-        address = settings_ipv6.get_address(0)
-        self.assertEqual(address.get_address(), '::ffff:169.254.0.1')
-        self.assertEqual(address.get_prefix(), 63)
-        self.assertEqual(settings_ipv6.get_gateway(), '::ffff:169.254.0.254')
-        self.assertEqual(settings_ipv6.get_num_dns(), 2)
-        self.assertEqual(settings_ipv6.get_dns(0), '::ffff:1.2.3.4')
-        self.assertEqual(settings_ipv6.get_dns(1), '::ffff:1.2.3.5')
+    connection = network.get_connection(pppoe_uuid)
+    assert connection.get_id() == 'plinth_test_pppoe_new'
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_wifi_manual_ipv4_address(self):
-        """Check that we can manually set IPv4 address on wifi."""
-        connection = network.get_connection(self.wifi_uuid)
-        wifi_settings2 = copy.deepcopy(wifi_settings)
-        wifi_settings2['ipv4']['method'] = 'manual'
-        wifi_settings2['ipv4']['address'] = '169.254.0.2'
-        wifi_settings2['ipv4']['netmask'] = '255.255.254.0'
-        wifi_settings2['ipv4']['gateway'] = '169.254.0.254'
-        wifi_settings2['ipv4']['dns'] = '1.2.3.4'
-        wifi_settings2['ipv4']['second_dns'] = '1.2.3.5'
-        wifi_settings2['wireless']['ssid'] = 'plinthtestwifi'
-        wifi_settings2['wireless']['mode'] = 'adhoc'
-        wifi_settings2['wireless']['auth_mode'] = 'open'
-        network.edit_connection(connection, wifi_settings2)
+    settings_connection = connection.get_setting_connection()
+    assert settings_connection.get_interface_name() == 'eth2'
+    assert settings_connection.get_zone() == 'external'
+    assert not settings_connection.get_autoconnect()
 
-        connection = network.get_connection(self.wifi_uuid)
-        settings_ipv4 = connection.get_setting_ip4_config()
-        self.assertEqual(settings_ipv4.get_method(), 'manual')
+    settings_pppoe = connection.get_setting_pppoe()
+    assert settings_pppoe.get_username() == 'x-user-new'
+    secrets = connection.get_secrets('pppoe')
+    assert secrets['pppoe']['password'] == 'x-password-new'
 
-        address = settings_ipv4.get_address(0)
-        self.assertEqual(address.get_address(), '169.254.0.2')
-        self.assertEqual(address.get_prefix(), 23)
-        self.assertEqual(settings_ipv4.get_gateway(), '169.254.0.254')
-        self.assertEqual(settings_ipv4.get_num_dns(), 2)
-        self.assertEqual(settings_ipv4.get_dns(0), '1.2.3.4')
-        self.assertEqual(settings_ipv4.get_dns(1), '1.2.3.5')
+    settings_ppp = connection.get_setting_ppp()
+    assert settings_ppp.get_lcp_echo_failure() == 5
+    assert settings_ppp.get_lcp_echo_interval() == 30
 
-    @unittest.skipUnless(euid == 0, 'Needs to be root')
-    def test_wifi_manual_ipv6_address(self):
-        """Check that we can manually set IPv6 address on wifi."""
-        connection = network.get_connection(self.wifi_uuid)
-        wifi_settings2 = copy.deepcopy(wifi_settings)
-        wifi_settings2['ipv6']['method'] = 'manual'
-        wifi_settings2['ipv6']['address'] = '::ffff:169.254.0.2'
-        wifi_settings2['ipv6']['prefix'] = 63
-        wifi_settings2['ipv6']['gateway'] = '::ffff:169.254.0.254'
-        wifi_settings2['ipv6']['dns'] = '::ffff:1.2.3.4'
-        wifi_settings2['ipv6']['second_dns'] = '::ffff:1.2.3.5'
-        wifi_settings2['wireless']['ssid'] = 'plinthtestwifi'
-        wifi_settings2['wireless']['mode'] = 'adhoc'
-        wifi_settings2['wireless']['auth_mode'] = 'open'
-        network.edit_connection(connection, wifi_settings2)
 
-        connection = network.get_connection(self.wifi_uuid)
-        settings_ipv6 = connection.get_setting_ip6_config()
-        self.assertEqual(settings_ipv6.get_method(), 'manual')
+def test_edit_wifi_connection(network, wifi_uuid):
+    """Check that we can update a wifi connection."""
+    connection = network.get_connection(wifi_uuid)
+    wifi_settings2 = copy.deepcopy(wifi_settings)
+    wifi_settings2['common']['name'] = 'plinth_test_wifi_new'
+    wifi_settings2['common']['interface'] = 'wlan1'
+    wifi_settings2['common']['zone'] = 'external'
+    wifi_settings2['common']['autoconnect'] = False
+    wifi_settings2['ipv4']['method'] = 'auto'
+    wifi_settings2['wireless']['ssid'] = 'plinthtestwifi2'
+    wifi_settings2['wireless']['mode'] = 'infrastructure'
+    wifi_settings2['wireless']['auth_mode'] = 'wpa'
+    wifi_settings2['wireless']['passphrase'] = 'secretpassword'
+    network.edit_connection(connection, wifi_settings2)
 
-        address = settings_ipv6.get_address(0)
-        self.assertEqual(address.get_address(), '::ffff:169.254.0.2')
-        self.assertEqual(address.get_prefix(), 63)
-        self.assertEqual(settings_ipv6.get_gateway(), '::ffff:169.254.0.254')
-        self.assertEqual(settings_ipv6.get_num_dns(), 2)
-        self.assertEqual(settings_ipv6.get_dns(0), '::ffff:1.2.3.4')
-        self.assertEqual(settings_ipv6.get_dns(1), '::ffff:1.2.3.5')
+    connection = network.get_connection(wifi_uuid)
+
+    assert connection.get_id() == 'plinth_test_wifi_new'
+
+    settings_connection = connection.get_setting_connection()
+    assert settings_connection.get_interface_name() == 'wlan1'
+    assert settings_connection.get_zone() == 'external'
+    assert not settings_connection.get_autoconnect()
+
+    settings_wireless = connection.get_setting_wireless()
+    assert settings_wireless.get_ssid().get_data() == b'plinthtestwifi2'
+    assert settings_wireless.get_mode() == 'infrastructure'
+
+    wifi_sec = connection.get_setting_wireless_security()
+    assert wifi_sec.get_key_mgmt() == 'wpa-psk'
+
+    secrets = connection.get_secrets('802-11-wireless-security')
+    assert secrets['802-11-wireless-security']['psk'] == 'secretpassword'
+
+
+def test_ethernet_manual_ipv4_address(network, ethernet_uuid):
+    """Check that we can manually set IPv4 address on ethernet."""
+    connection = network.get_connection(ethernet_uuid)
+    ethernet_settings2 = copy.deepcopy(ethernet_settings)
+    ethernet_settings2['ipv4']['method'] = 'manual'
+    ethernet_settings2['ipv4']['address'] = '169.254.0.1'
+    ethernet_settings2['ipv4']['netmask'] = '255.255.254.0'
+    ethernet_settings2['ipv4']['gateway'] = '169.254.0.254'
+    ethernet_settings2['ipv4']['dns'] = '1.2.3.4'
+    ethernet_settings2['ipv4']['second_dns'] = '1.2.3.5'
+    network.edit_connection(connection, ethernet_settings2)
+
+    connection = network.get_connection(ethernet_uuid)
+    settings_ipv4 = connection.get_setting_ip4_config()
+    assert settings_ipv4.get_method() == 'manual'
+
+    address = settings_ipv4.get_address(0)
+    assert address.get_address() == '169.254.0.1'
+    assert address.get_prefix() == 23
+    assert settings_ipv4.get_gateway() == '169.254.0.254'
+    assert settings_ipv4.get_num_dns() == 2
+    assert settings_ipv4.get_dns(0) == '1.2.3.4'
+    assert settings_ipv4.get_dns(1) == '1.2.3.5'
+
+
+def test_ethernet_manual_ipv6_address(network, ethernet_uuid):
+    """Check that we can manually set IPv6 address on ethernet."""
+    connection = network.get_connection(ethernet_uuid)
+    ethernet_settings2 = copy.deepcopy(ethernet_settings)
+    ethernet_settings2['ipv6']['method'] = 'manual'
+    ethernet_settings2['ipv6']['address'] = '::ffff:169.254.0.1'
+    ethernet_settings2['ipv6']['prefix'] = '63'
+    ethernet_settings2['ipv6']['gateway'] = '::ffff:169.254.0.254'
+    ethernet_settings2['ipv6']['dns'] = '::ffff:1.2.3.4'
+    ethernet_settings2['ipv6']['second_dns'] = '::ffff:1.2.3.5'
+    network.edit_connection(connection, ethernet_settings2)
+
+    connection = network.get_connection(ethernet_uuid)
+    settings_ipv6 = connection.get_setting_ip6_config()
+    assert settings_ipv6.get_method() == 'manual'
+
+    address = settings_ipv6.get_address(0)
+    assert address.get_address() == '::ffff:169.254.0.1'
+    assert address.get_prefix() == 63
+    assert settings_ipv6.get_gateway() == '::ffff:169.254.0.254'
+    assert settings_ipv6.get_num_dns() == 2
+    assert settings_ipv6.get_dns(0) == '::ffff:1.2.3.4'
+    assert settings_ipv6.get_dns(1) == '::ffff:1.2.3.5'
+
+
+def test_wifi_manual_ipv4_address(network, wifi_uuid):
+    """Check that we can manually set IPv4 address on wifi."""
+    connection = network.get_connection(wifi_uuid)
+    wifi_settings2 = copy.deepcopy(wifi_settings)
+    wifi_settings2['ipv4']['method'] = 'manual'
+    wifi_settings2['ipv4']['address'] = '169.254.0.2'
+    wifi_settings2['ipv4']['netmask'] = '255.255.254.0'
+    wifi_settings2['ipv4']['gateway'] = '169.254.0.254'
+    wifi_settings2['ipv4']['dns'] = '1.2.3.4'
+    wifi_settings2['ipv4']['second_dns'] = '1.2.3.5'
+    wifi_settings2['wireless']['ssid'] = 'plinthtestwifi'
+    wifi_settings2['wireless']['mode'] = 'adhoc'
+    wifi_settings2['wireless']['auth_mode'] = 'open'
+    network.edit_connection(connection, wifi_settings2)
+
+    connection = network.get_connection(wifi_uuid)
+    settings_ipv4 = connection.get_setting_ip4_config()
+    assert settings_ipv4.get_method() == 'manual'
+
+    address = settings_ipv4.get_address(0)
+    assert address.get_address() == '169.254.0.2'
+    assert address.get_prefix() == 23
+    assert settings_ipv4.get_gateway() == '169.254.0.254'
+    assert settings_ipv4.get_num_dns() == 2
+    assert settings_ipv4.get_dns(0) == '1.2.3.4'
+    assert settings_ipv4.get_dns(1) == '1.2.3.5'
+
+
+def test_wifi_manual_ipv6_address(network, wifi_uuid):
+    """Check that we can manually set IPv6 address on wifi."""
+    connection = network.get_connection(wifi_uuid)
+    wifi_settings2 = copy.deepcopy(wifi_settings)
+    wifi_settings2['ipv6']['method'] = 'manual'
+    wifi_settings2['ipv6']['address'] = '::ffff:169.254.0.2'
+    wifi_settings2['ipv6']['prefix'] = 63
+    wifi_settings2['ipv6']['gateway'] = '::ffff:169.254.0.254'
+    wifi_settings2['ipv6']['dns'] = '::ffff:1.2.3.4'
+    wifi_settings2['ipv6']['second_dns'] = '::ffff:1.2.3.5'
+    wifi_settings2['wireless']['ssid'] = 'plinthtestwifi'
+    wifi_settings2['wireless']['mode'] = 'adhoc'
+    wifi_settings2['wireless']['auth_mode'] = 'open'
+    network.edit_connection(connection, wifi_settings2)
+
+    connection = network.get_connection(wifi_uuid)
+    settings_ipv6 = connection.get_setting_ip6_config()
+    assert settings_ipv6.get_method() == 'manual'
+
+    address = settings_ipv6.get_address(0)
+    assert address.get_address() == '::ffff:169.254.0.2'
+    assert address.get_prefix() == 63
+    assert settings_ipv6.get_gateway() == '::ffff:169.254.0.254'
+    assert settings_ipv6.get_num_dns() == 2
+    assert settings_ipv6.get_dns(0) == '::ffff:1.2.3.4'
+    assert settings_ipv6.get_dns(1) == '::ffff:1.2.3.5'

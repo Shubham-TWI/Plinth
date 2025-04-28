@@ -1,49 +1,21 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
-"""
-Plinth module to configure OpenVPN server.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure OpenVPN server."""
 
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.daemon import Daemon
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages
 from plinth.utils import format_lazy
 
+from . import manifest, privileged
 
-version = 1
-
-service = None
-
-managed_services = ['openvpn@freedombox']
-
-managed_packages = ['openvpn', 'easy-rsa']
-
-name = _('OpenVPN')
-
-short_description = _('Virtual Private Network')
-
-description = [
+_description = [
     format_lazy(
         _('Virtual Private Network (VPN) is a technique for securely '
           'connecting two devices in order to access resources of a '
@@ -54,62 +26,74 @@ description = [
           'for added security and anonymity.'), box_name=_(cfg.box_name))
 ]
 
-
-def init():
-    """Initialize the OpenVPN module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-lock', 'openvpn:index', short_description)
-
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0], name, ports=['openvpn'], is_external=True)
-
-        if service.is_enabled() and is_setup():
-            add_shortcut()
+SERVER_CONFIGURATION_FILE = '/etc/openvpn/server/freedombox.conf'
 
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0], name, ports=['openvpn'], is_external=True,
-            enable=enable, disable=disable)
+class OpenVPNApp(app_module.App):
+    """FreedomBox app for OpenVPN."""
 
+    app_id = 'openvpn'
 
-def add_shortcut():
-    """Add shortcut in frontpage."""
-    download_profile = \
-        format_lazy(_('<a class="btn btn-primary btn-sm" href="{link}">'
-                      'Download Profile</a>'),
-                    link=reverse_lazy('openvpn:profile'))
-    frontpage.add_shortcut('openvpn', name,
-                           short_description=short_description,
-                           details=description + [download_profile],
-                           configure_url=reverse_lazy('openvpn:index'),
-                           login_required=True)
+    _version = 5
 
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-def is_setup():
-    """Return whether the service is running."""
-    return actions.superuser_run('openvpn', ['is-setup']).strip() == 'true'
+        self.groups = {'vpn': _('Connect to VPN services')}
 
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('OpenVPN'), icon_filename='openvpn',
+                               short_description=_('Virtual Private Network'),
+                               description=_description, manual_page='OpenVPN',
+                               clients=manifest.clients)
+        self.add(info)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('service', ['enable', managed_services[0]])
-    add_shortcut()
+        menu_item = menu.Menu('menu-openvpn', info.name,
+                              info.short_description, info.icon_filename,
+                              'openvpn:index', parent_url_name='apps')
+        self.add(menu_item)
 
+        download_profile = \
+            format_lazy(_('<a class="btn btn-primary btn-sm" href="{link}">'
+                          'Download Profile</a>'),
+                        link=reverse_lazy('openvpn:profile'))
+        shortcut = frontpage.Shortcut(
+            'shortcut-openvpn', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            description=info.description + [download_profile],
+            manual_page=info.manual_page,
+            configure_url=reverse_lazy('openvpn:index'), login_required=True,
+            allowed_groups=['vpn'])
+        self.add(shortcut)
 
-def disable():
-    """Enable the module."""
-    actions.superuser_run('service', ['disable', managed_services[0]])
-    frontpage.remove_shortcut('openvpn')
+        packages = Packages('packages-openvpn', ['openvpn', 'easy-rsa'])
+        self.add(packages)
 
+        firewall = Firewall('firewall-openvpn', info.name, ports=['openvpn'],
+                            is_external=True)
+        self.add(firewall)
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    return [action_utils.diagnose_port_listening(1194, 'udp4')]
+        daemon = Daemon('daemon-openvpn', 'openvpn-server@freedombox',
+                        listen_ports=[(1194, 'udp4'), (1194, 'udp6')])
+        self.add(daemon)
+
+        users_and_groups = UsersAndGroups('users-and-groups-openvpn',
+                                          groups=self.groups)
+        self.add(users_and_groups)
+
+        backup_restore = BackupRestore('backup-restore-openvpn',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup()
+        if not old_version:
+            self.enable()
+
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()

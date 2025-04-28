@@ -1,37 +1,49 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module for power controls.
+FreedomBox app for power controls.
 """
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-version = 1
+from plinth import app as app_module
+from plinth import menu
+from plinth.modules.backups.components import BackupRestore
 
-is_essential = True
+from . import manifest
 
-name = _('Power')
-
-description = [
-    _('Restart or shut down the system.')
-]
+_description = [_('Restart or shut down the system.')]
 
 
-def init():
-    """Initialize the power module."""
-    pass  # not in menu, see issue #834
+class PowerApp(app_module.App):
+    """FreedomBox app for power controls."""
+
+    app_id = 'power'
+
+    _version = 1
+
+    can_be_disabled = False
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True, name=_('Power'),
+                               icon='fa-power-off', description=_description,
+                               manual_page='Power')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-power', info.name, None, info.icon,
+                              'power:index',
+                              parent_url_name='system:administration',
+                              order=50)
+        self.add(menu_item)
+
+        backup_restore = BackupRestore('backup-restore-power',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        self.enable()

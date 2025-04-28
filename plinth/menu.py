@@ -1,87 +1,86 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
-from django.urls import reverse, reverse_lazy
+from typing import ClassVar
+
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
+
+from plinth import app
 
 
-class Menu(object):
-    """One menu item."""
-    def __init__(self, label="", icon="", url="#", order=50):
-        """label is the text that is displayed on the menu.
+class Menu(app.FollowerComponent):
+    """Component to manage a single menu item."""
 
-        icon is the icon to be displayed next to the label.
-        Choose from the Glyphicon set:
-        http://twitter.github.com/bootstrap/base-css.html#icons
+    _all_menus: ClassVar[set['Menu']] = set()
 
-        url is the url location that will be activated when the menu
-        item is selected.
+    def __init__(self, component_id, name=None, short_description=None,
+                 icon=None, url_name=None, url_args=None, url_kwargs=None,
+                 parent_url_name=None, order=50, advanced=False):
+        """Initialize a new menu item with basic properties.
 
-        order is the numerical rank of this item within the menu.
-        Lower order items appear closest to the top/left of the menu.
-        By convention, we use the spectrum between 0 and 100 to rank
-        orders, but feel free to disregard that.  If you need more
-        granularity, don't bother renumbering things.  Feel free to
-        use fractional orders.
+        name is the label of the menu item.
+
+        short_description is an optional description shown on the menu item.
+
+        icon is the icon to be displayed for the menu item. Icon can be the
+        name of a glyphicon from the Fork Awesome font's icon set:
+        https://forkawesome.github.io/Fork-Awesome/icons/. In this case, the
+        icon name starts with the string 'fa-'. Alternatively, the icon can
+        also be a file under the directory plinth/modules/<app>/static/icons/,
+        provided without an extension. SVG icons are preferred. Currently, both
+        PNG and SVG icons with the same name are used. For example, if the
+        value of icon is 'myicon' and app_id in App class is 'myapp', then two
+        icons files plinth/modules/myapp/static/icons/myicon.svg and
+        plinth/modules/myapp/static/icons/myicon.png are used in the interface.
+
+        url_name is the name of url location that will be activated when the
+        menu item is selected. This is not optional. url_args and url_kwargs
+        are sent to reverse() when resolving url from url_name.
+
+        parent_url_name optionally specifies the menu item under which this
+        menu item should become a child.
+
+        order is the numerical rank of this item within the menu. Lower order
+        items appear closest to the top/left of the menu. By convention, we use
+        the spectrum between 0 and 100 to rank orders, but feel free to
+        disregard that. If you need more granularity, don't bother renumbering
+        things. Feel free to use fractional orders.
+
+        advanced decides whether to show the menu item only in advanced mode.
 
         """
-        self.label = label
+        super().__init__(component_id)
+        if not url_name:
+            raise ValueError('Valid url_name is expected')
+
+        url = reverse_lazy(url_name, args=url_args, kwargs=url_kwargs)
+
+        self.name = name
+        self.short_description = short_description
         self.icon = icon
         self.url = url
         self.order = order
-        # TODO: With an ordered dictionary for self.items we could access the
-        # items by their URL directly instead of searching for them each time,
-        # which we do currently with the 'get' method
-        self.items = []
+        self.advanced = advanced
 
-    def get(self, urlname, url_args=None, url_kwargs=None):
-        """Return a menu item with given URL name."""
-        url = reverse(urlname, args=url_args, kwargs=url_kwargs)
-        for item in self.items:
-            if str(item.url) == url:
-                return item
+        self.url_name = url_name
+        self.url_args = url_args
+        self.url_kwargs = url_kwargs
+        self.parent_url_name = parent_url_name
 
-        raise KeyError('Menu item not found')
+        # Add self to global list of menu items.
+        self._all_menus.add(self)
+
+    @property
+    def items(self):
+        """Return the list of children for this menu item."""
+        return [
+            item for item in self._all_menus
+            if item.parent_url_name == self.url_name
+        ]
 
     def sorted_items(self):
         """Return menu items in sorted order according to current locale."""
-        return sorted(self.items, key=lambda x: (x.order, x.label))
-
-    def add_urlname(self, name, icon, urlname, short_description="", order=50, url_args=None,
-                    url_kwargs=None):
-        """Add a named URL to the menu (via add_item).
-
-        url_args and url_kwargs will be passed on to Django reverse().
-
-        """
-        if short_description:
-            label = '{0} ({1})'.format(short_description, name)
-        else:
-            label = name
-        url = reverse_lazy(urlname, args=url_args, kwargs=url_kwargs)
-        return self.add_item(label, icon, url, order)
-
-    def add_item(self, label, icon, url, order=50):
-        """Create a new menu item with given parameters, add it to this menu and
-        return it.
-
-        """
-        item = Menu(label=label, icon=icon, url=url, order=order)
-        self.items.append(item)
-        return item
+        return sorted(self.items, key=lambda x: (x.order, x.name.lower()))
 
     def active_item(self, request):
         """Return the first active item (e.g. submenu) that is found."""
@@ -89,11 +88,28 @@ class Menu(object):
             if request.path.startswith(str(item.url)):
                 return item
 
+        return None
 
-main_menu = Menu()
+
+main_menu = None
 
 
 def init():
     """Create main menu and other essential menus."""
-    main_menu.add_urlname('', 'glyphicon-download-alt', 'apps')
-    main_menu.add_urlname('', 'glyphicon-cog', 'system')
+    global main_menu
+    main_menu = Menu('menu-index', url_name='index')
+    Menu('menu-apps', icon='fa-download', url_name='apps',
+         parent_url_name='index')
+    Menu('menu-system', icon='fa-cog', url_name='system',
+         parent_url_name='index')
+
+    Menu('menu-system-visibility', name=_('Visibility'), icon='fa-cog',
+         url_name='system:visibility', parent_url_name='system', order=10)
+    Menu('menu-system-data', name=_('Data'), icon='fa-cog',
+         url_name='system:data', parent_url_name='system', order=20)
+    Menu('menu-system-system', name=_('System'), icon='fa-cog',
+         url_name='system:system', parent_url_name='system', order=30)
+    Menu('menu-system-security', name=_('Security'), icon='fa-cog',
+         url_name='system:security', parent_url_name='system', order=40)
+    Menu('menu-system-administration', name=_('Administration'), icon='fa-cog',
+         url_name='system:administration', parent_url_name='system', order=50)

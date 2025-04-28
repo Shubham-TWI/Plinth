@@ -1,38 +1,25 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Plinth module to manage users
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to manage users."""
 
+import grp
 import subprocess
 
-from django.utils.translation import ugettext_lazy as _
+import augeas
+from django.utils.text import format_lazy
+from django.utils.translation import gettext_lazy as _
+from django.utils.translation import gettext_noop
 
-from plinth import action_utils, actions
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.diagnostic_check import (DiagnosticCheck,
+                                     DiagnosticCheckParameters, Result)
+from plinth.package import Packages
+from plinth.privileged import service as service_privileged
 
-version = 2
-
-is_essential = True
-
-managed_packages = [
-    'ldapscripts', 'ldap-utils', 'libnss-ldapd', 'libpam-ldapd', 'nslcd',
-    'slapd'
-]
+from . import privileged
+from .components import UsersAndGroups
 
 first_boot_steps = [
     {
@@ -42,67 +29,173 @@ first_boot_steps = [
     },
 ]
 
-name = _('Users and Groups')
-
-# List of all Plinth user groups
-groups = set()
-
-
-def init():
-    """Intialize the user module."""
-    menu = main_menu.get('system')
-    menu.add_urlname(name, 'glyphicon-user', 'users:index')
-
-
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    if not old_version:
-        helper.call('post', actions.superuser_run, 'users', ['first-setup'])
-    helper.call('post', actions.superuser_run, 'users', ['setup'])
+_description = [
+    _('Create and manage user accounts. These accounts serve as centralized '
+      'authentication mechanism for most apps. Some apps further require a '
+      'user account to be part of a group to authorize the user to access the '
+      'app.'),
+    format_lazy(
+        _('Any user may login to {box_name} web interface to see a list of '
+          'apps relevant to them in the home page. However, only users of '
+          'the <em>admin</em> group may alter apps or system settings.'),
+        box_name=_(cfg.box_name))
+]
 
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+class UsersApp(app_module.App):
+    """FreedomBox app for users and groups management."""
 
-    results.append(action_utils.diagnose_port_listening(389, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(389, 'tcp6'))
+    app_id = 'users'
 
-    results.append(_diagnose_ldap_entry('dc=thisbox'))
-    results.append(_diagnose_ldap_entry('ou=people'))
-    results.append(_diagnose_ldap_entry('ou=groups'))
+    _version = 5
 
-    return results
+    can_be_disabled = False
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True, name=_('Users and Groups'),
+                               icon='fa-users', description=_description,
+                               manual_page='Users')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-users', info.name, None, info.icon,
+                              'users:index', parent_url_name='system:system',
+                              order=10)
+        self.add(menu_item)
+
+        packages = Packages('packages-users', [
+            'ldapscripts', 'ldap-utils', 'libnss-ldapd', 'libpam-ldapd',
+            'nscd', 'nslcd', 'samba-common-bin', 'slapd', 'tdb-tools'
+        ])
+        self.add(packages)
+
+        dropin_configs = DropinConfigs('dropin-configs-users', [
+            '/etc/apache2/includes/freedombox-auth-ldap.conf',
+        ])
+        self.add(dropin_configs)
+
+        daemon = Daemon('daemon-users', 'slapd', listen_ports=[(389, 'tcp4'),
+                                                               (389, 'tcp6')])
+        self.add(daemon)
+
+        # Add the admin group
+        groups = {'admin': _('Access to all services and system settings')}
+        users_and_groups = UsersAndGroups('users-and-groups-admin',
+                                          groups=groups)
+        self.add(users_and_groups)
+
+    def diagnose(self) -> list[DiagnosticCheck]:
+        """Run diagnostics and return the results."""
+        results = super().diagnose()
+
+        results.append(_diagnose_ldap_entry('dc=thisbox'))
+        results.append(_diagnose_ldap_entry('ou=people'))
+        results.append(_diagnose_ldap_entry('ou=groups'))
+
+        config = privileged.get_nslcd_config()
+        results.append(_diagnose_nslcd_config(config, 'uri', 'ldapi:///'))
+        results.append(_diagnose_nslcd_config(config, 'base', 'dc=thisbox'))
+        results.append(_diagnose_nslcd_config(config, 'sasl_mech', 'EXTERNAL'))
+
+        results.extend(_diagnose_nsswitch_config())
+
+        return results
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if not old_version:
+            privileged.first_setup()
+
+        privileged.setup()
+        privileged.create_group('freedombox-share')
 
 
-def _diagnose_ldap_entry(search_item):
+def _diagnose_ldap_entry(search_item: str) -> DiagnosticCheck:
     """Diagnose that an LDAP entry exists."""
-    result = 'failed'
+    check_id = f'users-ldap-entry-{search_item}'
+    result = Result.FAILED
 
     try:
         subprocess.check_output(
             ['ldapsearch', '-x', '-b', 'dc=thisbox', search_item])
-        result = 'passed'
+        result = Result.PASSED
     except subprocess.CalledProcessError:
         pass
 
-    return [
-        _('Check LDAP entry "{search_item}"').format(search_item=search_item),
-        result
-    ]
+    description = gettext_noop('Check LDAP entry "{search_item}"')
+    parameters: DiagnosticCheckParameters = {'search_item': search_item}
+
+    return DiagnosticCheck(check_id, description, result, parameters)
 
 
-def create_group(group):
-    """Add an LDAP group."""
-    actions.superuser_run('users', options=['create-group', group])
-    register_group(group)
+def _diagnose_nslcd_config(config: dict[str, str], key: str,
+                           value: str) -> DiagnosticCheck:
+    """Diagnose that nslcd has a configuration."""
+    check_id = f'users-nslcd-config-{key}'
+    try:
+        result = Result.PASSED if config[key] == value else Result.FAILED
+    except KeyError:
+        result = Result.FAILED
+
+    description = gettext_noop('Check nslcd config "{key} {value}"')
+    parameters: DiagnosticCheckParameters = {'key': key, 'value': value}
+
+    return DiagnosticCheck(check_id, description, result, parameters)
 
 
-def remove_group(group):
-    """Remove an LDAP group."""
-    actions.superuser_run('users', options=['remove-group', group])
+def _diagnose_nsswitch_config() -> list[DiagnosticCheck]:
+    """Diagnose that Name Service Switch is configured to use LDAP."""
+    nsswitch_conf = '/etc/nsswitch.conf'
+    aug = augeas.Augeas(flags=augeas.Augeas.NO_LOAD +
+                        augeas.Augeas.NO_MODL_AUTOLOAD)
+    aug.transform('Nsswitch', nsswitch_conf)
+    aug.set('/augeas/context', '/files' + nsswitch_conf)
+    aug.load()
+
+    results = []
+    for database in ['passwd', 'group', 'shadow']:
+        check_id = f'users-nsswitch-config-{database}'
+        result = Result.FAILED
+        for match in aug.match('database'):
+            if aug.get(match) != database:
+                continue
+
+            for service_match in aug.match(match + '/service'):
+                if 'ldap' == aug.get(service_match):
+                    result = Result.PASSED
+                    break
+
+            break
+
+        description = gettext_noop('Check nsswitch config "{database}"')
+        parameters: DiagnosticCheckParameters = {'database': database}
+
+        results.append(
+            DiagnosticCheck(check_id, description, result, parameters))
+
+    return results
 
 
-def register_group(group):
-    groups.add(group)
+def get_last_admin_user():
+    """If there is only one admin user return its name else return None."""
+    admin_users = privileged.get_group_users('admin')
+    if len(admin_users) == 1 and admin_users[0]:
+        return admin_users[0]
+
+    return None
+
+
+def add_user_to_share_group(username, service=None):
+    """Add user to the freedombox-share group."""
+    try:
+        group_members = grp.getgrnam('freedombox-share').gr_mem
+    except KeyError:
+        group_members = []
+    if username not in group_members:
+        privileged.add_user_to_group(username, 'freedombox-share')
+        if service:
+            service_privileged.try_restart(service)

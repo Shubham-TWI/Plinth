@@ -1,170 +1,65 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 
-from django.contrib import messages
 from django.http import HttpResponseRedirect
-from django.template.response import TemplateResponse
 from django.urls import reverse, reverse_lazy
-from django.utils.translation import ugettext_lazy as _
-from django.views.generic import View, TemplateView
+from django.utils.translation import gettext as _
+from django.views.generic import View
 from django.views.generic.edit import FormView
 
-from . import utils
-from .forms import ConfigurationForm, StandardServiceForm, \
-    AddCustomServiceForm, DeleteCustomServiceForm, FirstBootForm
-from plinth import cfg
-from plinth.errors import DomainRegistrationError
-from plinth.modules import first_boot
-from plinth.modules import pagekite
+from plinth.views import AppView
 
-subsubmenu = [{'url': reverse_lazy('pagekite:index'),
-               'text': _('About PageKite')},
-              {'url': reverse_lazy('pagekite:configure'),
-               'text': _('Configure PageKite')},
-              {'url': reverse_lazy('pagekite:standard-services'),
-               'text': _('Standard Services')},
-              {'url': reverse_lazy('pagekite:custom-services'),
-               'text': _('Custom Services')}]
+from . import privileged
+from .forms import (AddCustomServiceForm, ConfigurationForm,
+                    DeleteCustomServiceForm)
 
 
-def index(request):
-    """Serve introduction page"""
-    return TemplateResponse(request, 'pagekite_introduction.html',
-                            {'title': pagekite.name,
-                             'description': pagekite.description,
-                             'subsubmenu': subsubmenu})
+class DeleteServiceView(View):
 
-
-class ContextMixin(object):
-    """Mixin to add 'subsubmenu' and 'title' to the context.
-
-    Also adds the requirement of all necessary packages to be installed
-    """
-
-    def get_context_data(self, **kwargs):
-        """Use self.title and the module-level subsubmenu"""
-        context = super(ContextMixin, self).get_context_data(**kwargs)
-        context['title'] = getattr(self, 'title', '')
-        context['subsubmenu'] = subsubmenu
-        return context
-
-    def dispatch(self, *args, **kwargs):
-        return super(ContextMixin, self).dispatch(*args, **kwargs)
-
-
-class DeleteServiceView(ContextMixin, View):
     def post(self, request):
         form = DeleteCustomServiceForm(request.POST)
         if form.is_valid():
             form.delete(request)
-        return HttpResponseRedirect(reverse('pagekite:custom-services'))
+        return HttpResponseRedirect(reverse('pagekite:index'))
 
 
-class CustomServiceView(ContextMixin, TemplateView):
+class AddCustomServiceView(FormView):
+    """View to add a new custom PageKite service."""
+    form_class = AddCustomServiceForm
     template_name = 'pagekite_custom_services.html'
+    success_url = reverse_lazy('pagekite:index')
 
     def get_context_data(self, *args, **kwargs):
-        context = super(CustomServiceView, self).get_context_data(*args,
-                                                                  **kwargs)
-        unused, custom_services = utils.get_pagekite_services()
-        for service in custom_services:
-            service['form'] = AddCustomServiceForm(initial=service)
-        context['custom_services'] = [
-            utils.prepare_service_for_display(service)
-            for service in custom_services]
-        context.update(utils.get_kite_details())
+        """Return additional context for rendering the template."""
+        context = super().get_context_data(*args, **kwargs)
+        context['title'] = _('Add custom PageKite service')
         return context
 
-    def get(self, request, *args, **kwargs):
-        context = self.get_context_data(**kwargs)
-        form = AddCustomServiceForm(prefix="custom")
-        context['form'] = form
-        return self.render_to_response(context)
-
-    def post(self, request):
-        form = AddCustomServiceForm(request.POST, prefix="custom")
-        if form.is_valid():
-            form.save(request)
-            form = AddCustomServiceForm(prefix="custom")
-
-        context = self.get_context_data()
-        context['form'] = form
-
-        return self.render_to_response(context)
-
-
-class StandardServiceView(ContextMixin, FormView):
-    template_name = 'pagekite_standard_services.html'
-    title = 'PageKite Standard Services'
-    form_class = StandardServiceForm
-    success_url = reverse_lazy('pagekite:standard-services')
-
-    def get_initial(self):
-        return utils.get_pagekite_services()[0]
-
     def form_valid(self, form):
+        """Add a custom service."""
         form.save(self.request)
-        return super(StandardServiceView, self).form_valid(form)
+        return super().form_valid(form)
 
 
-class ConfigurationView(ContextMixin, FormView):
+class ConfigurationView(AppView):
+    app_id = 'pagekite'
     template_name = 'pagekite_configure.html'
     form_class = ConfigurationForm
     prefix = 'pagekite'
-    success_url = reverse_lazy('pagekite:configure')
+    success_url = reverse_lazy('pagekite:index')
 
-    def get_initial(self):
-        return utils.get_pagekite_config()
+    def __init__(self, *args, **kwargs):
+        """Load and store the current configuration."""
+        super().__init__(*args, **kwargs)
+        self.config = privileged.get_config()
+        self.initial = self.config
+
+    def get_context_data(self, *args, **kwargs):
+        context = super().get_context_data(*args, **kwargs)
+        for service in self.config['custom_services']:
+            service['delete_form'] = DeleteCustomServiceForm(initial=service)
+        context.update(self.config)
+        return context
 
     def form_valid(self, form):
         form.save(self.request)
-        return super(ConfigurationView, self).form_valid(form)
-
-
-class FirstBootView(FormView):
-    """First boot (optional) setup of the Pagekite subdomain."""
-    template_name = 'pagekite_firstboot.html'
-    form_class = FirstBootForm
-
-    def get(self, request, *args, **kwargs):
-        """Skip if this first boot step if it is not relavent."""
-        if not cfg.danube_edition:
-            first_boot.mark_step_done('pagekite_firstboot')
-            return HttpResponseRedirect(reverse(first_boot.next_step()))
-
-        return super().get(request, *args, **kwargs)
-
-    def form_valid(self, form):
-        """Act on valid form submission."""
-        try:
-            form.register_domain()
-        except DomainRegistrationError as error:
-            messages.error(self.request, error)
-            return self.form_invalid(form)
-
-        form.setup_pagekite()
-        first_boot.mark_step_done('pagekite_firstboot')
-        message = _('Pagekite setup finished. The HTTP and HTTPS services '
-                    'are activated now.')
-        messages.success(self.request, message)
-        return HttpResponseRedirect(reverse(first_boot.next_step()))
-
-
-def first_boot_skip(request):
-    """Skip the first boot step."""
-    first_boot.mark_step_done('pagekite_firstboot')
-    return HttpResponseRedirect(reverse(first_boot.next_step()))
+        return super().form_valid(form)

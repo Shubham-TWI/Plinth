@@ -1,21 +1,6 @@
 {% extends 'help_base.html' %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load i18n %}
@@ -23,8 +8,28 @@
 
 {% block content %}
 
-  <img src="{% static 'theme/img/freedombox-logo-250px.png' %}"
-       class="main-graphic" />
+  <p class="text-center">
+    <img src="{% static 'theme/img/freedombox-logo-250px.png' %}"
+         class="main-graphic" />
+  </p>
+
+  <div class="alert {% if new_version %}alert-warning{% else %}alert-success{% endif %}">
+    {% blocktrans trimmed %}
+      You are running {{ os_release }} and {{ box_name }} version {{ version }}.
+    {% endblocktrans %}
+
+    {% if new_version %}
+      {% url 'upgrades:index' as upgrades_url %}
+      {% blocktrans trimmed %}
+        There is a new {{ box_name }} version
+        <a href="{{ upgrades_url }}">available</a>.
+      {% endblocktrans %}
+    {% else %}
+      {% blocktrans trimmed %}
+        {{ box_name }} is up to date.
+      {% endblocktrans %}
+    {% endif %}
+  </div>
 
   <p>
     {% blocktrans trimmed %}
@@ -62,30 +67,27 @@
 
   <p>
     {% blocktrans trimmed %}
+      {{ box_name }} is free software, licensed under the GNU Affero
+      General Public License. The source code is available online at the
+      <a href="https://salsa.debian.org/freedombox-team/freedombox">
+        {{ box_name }} repository</a>.  In addition, the source code of
+      any Debian package can be obtained from the
+      <a href="https://sources.debian.org/">Debian Sources</a> site,
+      or by running "apt source <i>package_name</i>" in a terminal
+      (using Cockpit or SSH).
+    {% endblocktrans %}
+  </p>
+
+  <p>
+    {% blocktrans trimmed %}
       For more information about the {{ box_name }} project, see the
       <a href="https://wiki.debian.org/FreedomBox">{{ box_name }}
       Wiki</a>.
     {% endblocktrans %}
   </p>
 
-  <p><a class="btn btn-primary btn-lg"
+  <p><a class="btn btn-primary"
         href="https://wiki.debian.org/FreedomBox"
-        target="_blank">{% trans "Learn more &raquo;" %}</a></p>
-
-  <p style='margin-top:30px'>
-    {% blocktrans trimmed %}
-      You are running {{ os_release }} and Plinth version {{ version }}.
-    {% endblocktrans %}
-
-    {% if new_version %}
-      {% blocktrans trimmed %}
-        There is a new Plinth version available.
-      {% endblocktrans %}
-    {% else %}
-      {% blocktrans trimmed %}
-        Plinth is up to date.
-      {% endblocktrans %}
-    {% endif %}
-  </p>
+        target="_blank">{% trans "Learn more" %}</a></p>
 
 {% endblock %}

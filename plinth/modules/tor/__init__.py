@@ -1,197 +1,241 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure Tor."""
 
-"""
-Plinth module to configure Tor.
-"""
-
-from django.utils.translation import ugettext_lazy as _
 import json
+import logging
 
-from plinth import actions
+from django.utils.translation import gettext_lazy as _
+from django.utils.translation import gettext_noop
+
 from plinth import action_utils
-from plinth import service as service_module
-from plinth.menu import main_menu
-from plinth.modules.names import SERVICES
+from plinth import app as app_module
+from plinth import cfg, kvstore, menu
+from plinth import setup as setup_module_  # Not setup_module, for pytest
+from plinth.daemon import (Daemon, app_is_running, diagnose_netcat,
+                           diagnose_port_listening)
+from plinth.diagnostic_check import DiagnosticCheck, Result
+from plinth.modules import torproxy
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.names.components import DomainType
+from plinth.modules.torproxy.utils import is_apt_transport_tor_enabled
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages
 from plinth.signals import domain_added, domain_removed
-from .manifest import clients
+from plinth.utils import format_lazy
 
-from . import utils
+from . import manifest, privileged, utils
 
+logger = logging.getLogger(__name__)
 
-version = 2
-
-depends = ['names']
-
-managed_packages = ['tor', 'tor-geoipdb', 'torsocks', 'obfs4proxy',
-                    'apt-transport-tor']
-
-name = _('Tor')
-
-short_description = _('Anonymity Network')
-
-description = [
+_description = [
     _('Tor is an anonymous communication system. You can learn more '
       'about it from the <a href="https://www.torproject.org/">Tor '
       'Project</a> website. For best protection when web surfing, the '
       'Tor Project recommends that you use the '
       '<a href="https://www.torproject.org/download/download-easy.html.en">'
-      'Tor Browser</a>.')
+      'Tor Browser</a>.'),
+    _('This app provides relay services to contribute to Tor network and help '
+      'others overcome censorship.'),
+    format_lazy(
+        _('This app provides an onion domain to expose {box_name} services '
+          'via the Tor network. Using Tor browser, one can access {box_name} '
+          'from the internet even when using an ISP that limits servers at '
+          'home.'), box_name=_(cfg.box_name)),
 ]
 
-clients = clients
 
-reserved_usernames = ['debian-tor']
+class TorApp(app_module.App):
+    """FreedomBox app for Tor."""
 
-socks_service = None
-bridge_service = None
+    app_id = 'tor'
 
+    _version = 7
 
-def init():
-    """Initialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-eye-close', 'tor:index', short_description)
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-    setup_helper = globals()['setup_helper']
-    needs_setup = setup_helper.get_state() == 'needs-setup'
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               depends=['names'
+                                        ], name=_('Tor'), icon_filename='tor',
+                               short_description=_('Anonymity Network'),
+                               description=_description, manual_page='Tor',
+                               clients=manifest.clients,
+                               donation_url='https://donate.torproject.org/')
+        self.add(info)
 
-    if not needs_setup:
-        global socks_service
-        socks_service = service_module.Service(
-            'tor-socks', _('Tor Anonymity Network'), ports=['tor-socks'],
-            is_external=False, is_enabled=utils.is_enabled,
-            is_running=utils.is_running)
+        menu_item = menu.Menu('menu-tor', info.name, info.short_description,
+                              info.icon_filename, 'tor:index',
+                              parent_url_name='apps')
+        self.add(menu_item)
 
-        global bridge_service
-        bridge_service = service_module.Service(
-            'tor-bridge', _('Tor Bridge Relay'),
-            ports=['tor-orport', 'tor-obfs3', 'tor-obfs4'],
-            is_external=True, is_enabled=utils.is_enabled,
-            is_running=utils.is_running)
+        packages = Packages('packages-tor',
+                            ['tor', 'tor-geoipdb', 'obfs4proxy'])
+        self.add(packages)
 
-        # Register hidden service name with Name Services module.
+        domain_type = DomainType('domain-type-tor', _('Tor Onion Service'),
+                                 'tor:index', can_have_certificate=False)
+        self.add(domain_type)
+
+        firewall = Firewall('firewall-tor-relay', _('Tor Bridge Relay'),
+                            ports=['tor-orport', 'tor-obfs3',
+                                   'tor-obfs4'], is_external=True)
+        self.add(firewall)
+
+        daemon = Daemon('daemon-tor', 'tor@plinth', strict_check=True)
+        self.add(daemon)
+
+        webserver = Webserver('webserver-onion-location',
+                              'onion-location-freedombox')
+        self.add(webserver)
+
+        users_and_groups = UsersAndGroups('users-and-groups-tor',
+                                          reserved_usernames=['debian-tor'])
+        self.add(users_and_groups)
+
+        backup_restore = BackupRestore('backup-restore-tor', **manifest.backup)
+        self.add(backup_restore)
+
+    def post_init(self):
+        """Perform post initialization operations."""
+        # Register onion service name with Name Services module.
+        if (not self.needs_setup() and self.is_enabled()
+                and app_is_running(self)):
+            status = utils.get_status(initialized=False)
+            hostname = status['hs_hostname']
+            services = [int(port['virtport']) for port in status['hs_ports']]
+
+            if status['hs_enabled'] and status['hs_hostname']:
+                domain_added.send_robust(sender='tor',
+                                         domain_type='domain-type-tor',
+                                         name=hostname, services=services)
+
+    def enable(self):
+        """Enable the app and update firewall ports."""
+        super().enable()
+        privileged.update_ports()
+        update_hidden_service_domain()
+
+    def disable(self):
+        """Disable the app and remove HS domain."""
+        super().disable()
+        update_hidden_service_domain()
+
+    def diagnose(self) -> list[DiagnosticCheck]:
+        """Run diagnostics and return the results."""
+        results = super().diagnose()
+
+        results.extend(_diagnose_control_port())
+
         status = utils.get_status()
-        hostname = status['hs_hostname']
-        hs_virtports = [port['virtport'] for port in status['hs_ports']]
+        ports = status['ports']
 
-        if status['enabled'] and status['is_running'] and \
-           status['hs_enabled'] and status['hs_hostname']:
-            hs_services = []
-            for service_type in SERVICES:
-                if str(service_type[2]) in hs_virtports:
-                    hs_services.append(service_type[0])
-        else:
-            hostname = None
-            hs_services = None
+        if status['relay_enabled']:
+            results.append(
+                DiagnosticCheck(
+                    'tor-port-relay', gettext_noop('Tor relay port available'),
+                    Result.PASSED if 'orport' in ports else Result.FAILED))
+            if 'orport' in ports:
+                results.append(
+                    diagnose_port_listening(int(ports['orport']), 'tcp4'))
+                results.append(
+                    diagnose_port_listening(int(ports['orport']), 'tcp6'))
 
-        domain_added.send_robust(
-            sender='tor', domain_type='hiddenservice',
-            name=hostname, description=_('Tor Hidden Service'),
-            services=hs_services)
+        if status['bridge_relay_enabled']:
+            results.append(
+                DiagnosticCheck(
+                    'tor-port-obfs3',
+                    gettext_noop('Obfs3 transport registered'),
+                    Result.PASSED if 'obfs3' in ports else Result.FAILED))
+            if 'obfs3' in ports:
+                results.append(
+                    diagnose_port_listening(int(ports['obfs3']), 'tcp4'))
+                results.append(
+                    diagnose_port_listening(int(ports['obfs3']), 'tcp6'))
 
+            results.append(
+                DiagnosticCheck(
+                    'tor-port-obfs4',
+                    gettext_noop('Obfs4 transport registered'),
+                    Result.PASSED if 'obfs4' in ports else Result.FAILED))
+            if 'obfs4' in ports:
+                results.append(
+                    diagnose_port_listening(int(ports['obfs4']), 'tcp4'))
+                results.append(
+                    diagnose_port_listening(int(ports['obfs4']), 'tcp6'))
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'tor', ['setup'])
-    helper.call('post', actions.superuser_run, 'tor',
-                ['configure', '--apt-transport-tor', 'enable'])
+        if status['hs_enabled']:
+            hs_hostname = status['hs_hostname'].split('.onion')[0]
+            results.append(
+                DiagnosticCheck(
+                    'tor-onion-version',
+                    gettext_noop('Onion service is version 3'), Result.PASSED
+                    if len(hs_hostname) == 56 else Result.FAILED))
 
-    global socks_service
-    if socks_service is None:
-        socks_service = service_module.Service(
-            'tor-socks', _('Tor Anonymity Network'), ports=['tor-socks'],
-            is_external=False, is_enabled=utils.is_enabled,
-            is_running=utils.is_running)
-    helper.call('post', socks_service.notify_enabled, None, True)
+        return results
 
-    global bridge_service
-    if bridge_service is None:
-        bridge_service = service_module.Service(
-            'tor-bridge', _('Tor Bridge Relay'),
-            ports=['tor-orport', 'tor-obfs3', 'tor-obfs4'],
-            is_external=True, is_enabled=utils.is_enabled,
-            is_running=utils.is_running)
-    helper.call('post', bridge_service.notify_enabled, None, True)
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup(old_version)
+        status = utils.get_status()
+        update_hidden_service_domain(status)
 
-    helper.call('post', update_hidden_service_domain)
+        # Enable/disable Onion-Location component based on app status.
+        # Component was introduced in version 6.
+        if old_version and old_version < 6:
+            daemon_component = self.get_component('daemon-tor')
+            component = self.get_component('webserver-onion-location')
+            if daemon_component.is_enabled():
+                logger.info('Enabling Onion-Location component')
+                component.enable()
+            else:
+                logger.info('Disabling Onion-Location component')
+                component.disable()
+
+        # The SOCKS proxy and "Download software packages using Tor" features
+        # were moved into a new app, Tor Proxy, in version 7. If Tor is
+        # enabled, then store the relevant configuration, and install Tor
+        # Proxy.
+        if old_version and old_version < 7 and self.is_enabled():
+            logger.info('Tor Proxy app will be installed')
+            config = {
+                'use_upstream_bridges': status['use_upstream_bridges'],
+                'upstream_bridges': status['upstream_bridges'],
+                'apt_transport_tor': is_apt_transport_tor_enabled()
+            }
+            kvstore.set(torproxy.PREINSTALL_CONFIG_KEY, json.dumps(config))
+            # This creates the operation, which will run after the current
+            # operation (Tor setup) is completed.
+            setup_module_.run_setup_on_app('torproxy')
+
+        if not old_version:
+            logger.info('Enabling Tor app')
+            self.enable()
+
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()
 
 
 def update_hidden_service_domain(status=None):
-    """Update HS domain with Name Services module."""
+    """Update onion service domain with Name Services module."""
     if not status:
         status = utils.get_status()
 
-    domain_removed.send_robust(
-        sender='tor', domain_type='hiddenservice')
+    domain_removed.send_robust(sender='tor', domain_type='domain-type-tor')
 
     if status['enabled'] and status['is_running'] and \
        status['hs_enabled'] and status['hs_hostname']:
-        domain_added.send_robust(
-            sender='tor', domain_type='hiddenservice',
-            name=status['hs_hostname'], description=_('Tor Hidden Service'),
-            services=status['hs_services'])
+        services = [int(port['virtport']) for port in status['hs_ports']]
+        domain_added.send_robust(sender='tor', domain_type='domain-type-tor',
+                                 name=status['hs_hostname'], services=services)
 
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
-    results.append(action_utils.diagnose_port_listening(9050, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(9050, 'tcp6'))
-    results.append(action_utils.diagnose_port_listening(9040, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(9040, 'tcp6'))
-    results.append(action_utils.diagnose_port_listening(9053, 'udp4'))
-    results.append(action_utils.diagnose_port_listening(9053, 'udp6'))
-
-    results.extend(_diagnose_control_port())
-
-    output = actions.superuser_run('tor', ['get-status'])
-    ports = json.loads(output)['ports']
-
-    results.append([_('Tor relay port available'),
-                    'passed' if 'orport' in ports else 'failed'])
-    if 'orport' in ports:
-        results.append(action_utils.diagnose_port_listening(ports['orport'],
-                                                            'tcp4'))
-        results.append(action_utils.diagnose_port_listening(ports['orport'],
-                                                            'tcp6'))
-
-    results.append([_('Obfs3 transport registered'),
-                    'passed' if 'obfs3' in ports else 'failed'])
-    if 'obfs3' in ports:
-        results.append(action_utils.diagnose_port_listening(ports['obfs3'],
-                                                            'tcp4'))
-
-    results.append([_('Obfs4 transport registered'),
-                    'passed' if 'obfs4' in ports else 'failed'])
-    if 'obfs4' in ports:
-        results.append(action_utils.diagnose_port_listening(
-            ports['obfs4'], 'tcp4'))
-
-    results.append(_diagnose_url_via_tor('http://www.debian.org', '4'))
-    results.append(_diagnose_url_via_tor('http://www.debian.org', '6'))
-
-    results.append(_diagnose_tor_use('https://check.torproject.org', '4'))
-    results.append(_diagnose_tor_use('https://check.torproject.org', '6'))
-
-    return results
-
-
-def _diagnose_control_port():
+def _diagnose_control_port() -> list[DiagnosticCheck]:
     """Diagnose whether Tor control port is open on 127.0.0.1 only."""
     results = []
 
@@ -204,27 +248,8 @@ def _diagnose_control_port():
         if address['address'] == '127.0.0.1':
             negate = False
 
-        results.append(action_utils.diagnose_netcat(
-            address['address'], 9051, input='QUIT\n', negate=negate))
+        results.append(
+            diagnose_netcat(str(address['address']), 9051,
+                            remote_input='QUIT\n', negate=negate))
 
     return results
-
-
-def _diagnose_url_via_tor(url, kind=None):
-    """Diagnose whether a URL is reachable via Tor."""
-    result = action_utils.diagnose_url(url, kind=kind, wrapper='torsocks')
-    result[0] = _('Access URL {url} on tcp{kind} via Tor') \
-        .format(url=url, kind=kind)
-
-    return result
-
-
-def _diagnose_tor_use(url, kind=None):
-    """Diagnose whether webpage at URL reports that we are using Tor."""
-    expected_output = 'Congratulations. This browser is configured to use Tor.'
-    result = action_utils.diagnose_url(url, kind=kind, wrapper='torsocks',
-                                       expected_output=expected_output)
-    result[0] = _('Confirm Tor usage at {url} on tcp{kind}') \
-        .format(url=url, kind=kind)
-
-    return result

@@ -1,49 +1,25 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Plinth module for Quassel.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app for Quassel."""
+
+import pathlib
 
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.daemon import Daemon
+from plinth.modules import names
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.letsencrypt.components import LetsEncrypt
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages
 from plinth.utils import format_lazy
-from plinth.views import ServiceView
-from .manifest import clients
 
-version = 1
+from . import manifest, privileged
 
-service = None
-
-managed_services = ['quasselcore']
-
-managed_packages = ['quassel-core']
-
-name = _('Quassel')
-
-short_description = _('IRC Client')
-
-description = [
+_description = [
     format_lazy(
         _('Quassel is an IRC application that is split into two parts, a '
           '"core" and a "client". This allows the core to remain connected '
@@ -51,8 +27,7 @@ description = [
           'the client is disconnected. {box_name} can run the Quassel '
           'core service keeping you always online and one or more Quassel '
           'clients from a desktop or a mobile can be used to connect and '
-          'disconnect from it.'),
-        box_name=_(cfg.box_name)),
+          'disconnect from it.'), box_name=_(cfg.box_name)),
     _('You can connect to your Quassel core on the default Quassel port '
       '4242.  Clients to connect to Quassel from your '
       '<a href="http://quassel-irc.org/downloads">desktop</a> and '
@@ -60,82 +35,106 @@ description = [
       'are available.'),
 ]
 
-clients = clients
 
-reserved_usernames = ['quasselcore']
+class QuasselApp(app_module.App):
+    """FreedomBox app for Quassel."""
 
+    app_id = 'quassel'
 
-def init():
-    """Initialize the quassel module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-retweet', 'quassel:index',
-                     short_description)
+    _version = 1
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0],
-            name,
-            ports=['quassel-plinth'],
-            is_external=True,
-            enable=enable,
-            disable=disable)
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-        if service.is_enabled():
-            add_shortcut()
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('Quassel'), icon_filename='quassel',
+                               short_description=_('IRC Client'),
+                               description=_description, manual_page='Quassel',
+                               clients=manifest.clients)
+        self.add(info)
 
+        menu_item = menu.Menu('menu-quassel', info.name,
+                              info.short_description, info.icon_filename,
+                              'quassel:index', parent_url_name='apps')
+        self.add(menu_item)
 
-class QuasselServiceView(ServiceView):
-    service_id = managed_services[0]
-    diagnostics_module_name = "quassel"
-    description = description
-    clients = clients
+        shortcut = frontpage.Shortcut(
+            'shortcut-quassel', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            description=info.description, manual_page=info.manual_page,
+            configure_url=reverse_lazy('quassel:index'), clients=info.clients,
+            login_required=True)
+        self.add(shortcut)
 
+        packages = Packages('packages-quassel', ['quassel-core'])
+        self.add(packages)
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0],
-            name,
-            ports=['quassel-plinth'],
-            is_external=True,
-            enable=enable,
-            disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+        firewall = Firewall('firewall-quassel', info.name,
+                            ports=['quassel-plinth'], is_external=True)
+        self.add(firewall)
 
+        letsencrypt = LetsEncrypt(
+            'letsencrypt-quassel', domains=get_domains,
+            daemons=['quasselcore'], should_copy_certificates=True,
+            private_key_path='/var/lib/quassel/quasselCert.pem',
+            certificate_path='/var/lib/quassel/quasselCert.pem',
+            user_owner='quasselcore', group_owner='quassel',
+            managing_app='quassel')
+        self.add(letsencrypt)
 
-def add_shortcut():
-    frontpage.add_shortcut(
-        'quassel',
-        name,
-        short_description=short_description,
-        details=description,
-        configure_url=reverse_lazy('quassel:index'),
-        login_required=True)
+        daemon = Daemon('daemon-quassel', 'quasselcore',
+                        listen_ports=[(4242, 'tcp4'), (4242, 'tcp6')])
+        self.add(daemon)
 
+        users_and_groups = UsersAndGroups('users-and-groups-quasselcore',
+                                          reserved_usernames=['quasselcore'])
+        self.add(users_and_groups)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('service', ['enable', managed_services[0]])
-    add_shortcut()
+        backup_restore = BackupRestore('backup-restore-quassel',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if not old_version:
+            self.enable()
 
-def disable():
-    """Disable the module."""
-    actions.superuser_run('service', ['disable', managed_services[0]])
-    frontpage.remove_shortcut('quassel')
+        self.get_component('letsencrypt-quassel').setup_certificates()
 
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+def set_domain(domain):
+    """Set the TLS domain by writing a file to data directory."""
+    if domain:
+        privileged.set_domain(domain)
 
-    results.append(action_utils.diagnose_port_listening(4242, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(4242, 'tcp6'))
 
-    return results
+def get_domain():
+    """Read TLS domain from config file select first available if none."""
+    domain = None
+    try:
+        with open('/var/lib/quassel/domain-freedombox',
+                  encoding='utf-8') as file_handle:
+            domain = file_handle.read().strip()
+    except FileNotFoundError:
+        pass
+
+    if not domain:
+        domain = next(names.get_available_tls_domains(), None)
+        set_domain(domain)
+
+    return domain
+
+
+def get_domains():
+    """Return a list with the configured domain for quassel."""
+    # If not installed, return empty. But work while installing too.
+    if not pathlib.Path('/var/lib/quassel/').exists():
+        return []
+
+    domain = get_domain()
+    if domain:
+        return [domain]
+
+    return []

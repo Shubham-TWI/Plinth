@@ -1,115 +1,127 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""
+FreedomBox app for radicale.
+"""
 
-"""
-Plinth module for radicale.
-"""
+import logging
 
 import augeas
-from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from plinth.utils import format_lazy
-from .manifest import clients
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.modules.apache.components import Uwsgi, Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages, install
+from plinth.utils import Version, format_lazy
 
+from . import manifest, privileged
 
-version = 1
-
-service = None
-
-managed_services = ['radicale']
-
-managed_packages = ['radicale']
-
-name = _('Radicale')
-
-short_description = _('Calendar and Addressbook')
-
-description = [
+_description = [
     format_lazy(
         _('Radicale is a CalDAV and CardDAV server. It allows synchronization '
           'and sharing of scheduling and contact data. To use Radicale, a '
-          '<a href="http://radicale.org/clients/">supported client '
-          'application</a> is needed. Radicale can be accessed by any user '
-          'with a {box_name} login.'), box_name=_(cfg.box_name)),
+          '<a href="https://radicale.org/master.html#documentation/supported-'
+          'clients">supported client application</a> is needed. Radicale can '
+          'be accessed by any user with a {box_name} login.'),
+        box_name=_(cfg.box_name)),
+    _('Radicale provides a basic web interface, which only supports creating '
+      'new calendars and addressbooks. It does not support adding events or '
+      'contacts, which must be done using a separate client.'),
 ]
 
-clients = clients
-
-reserved_usernames = ['radicale']
+logger = logging.getLogger(__name__)
 
 CONFIG_FILE = '/etc/radicale/config'
 
 
-def init():
-    """Initialize the radicale module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-calendar', 'radicale:index', short_description)
+class RadicaleApp(app_module.App):
+    """FreedomBox app for Radicale."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0], name, ports=['http', 'https'],
-            is_external=True,
-            enable=enable, disable=disable)
+    app_id = 'radicale'
 
-        if service.is_enabled():
-            add_shortcut()
+    _version = 3
 
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'radicale', ['setup'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0], name, ports=['http', 'https'],
-            is_external=True,
-            enable=enable, disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('Radicale'), icon_filename='radicale',
+                               short_description=_('Calendar and Addressbook'),
+                               description=_description,
+                               manual_page='Radicale',
+                               clients=manifest.clients)
+        self.add(info)
 
+        menu_item = menu.Menu('menu-radicale', info.name,
+                              info.short_description, info.icon_filename,
+                              'radicale:index', parent_url_name='apps')
+        self.add(menu_item)
 
-def add_shortcut():
-    frontpage.add_shortcut('radicale', name,
-                           short_description=short_description,
-                           details=description,
-                           configure_url=reverse_lazy('radicale:index'),
-                           login_required=True)
+        shortcut = frontpage.Shortcut('shortcut-radicale', info.name,
+                                      short_description=info.short_description,
+                                      icon=info.icon_filename,
+                                      url='/radicale/', clients=info.clients,
+                                      login_required=True)
+        self.add(shortcut)
 
+        packages = Packages('packages-radicale', ['radicale'])
+        self.add(packages)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('radicale', ['enable'])
-    add_shortcut()
+        dropin_configs = DropinConfigs('dropin-configs-radicale', [
+            '/etc/apache2/conf-available/radicale2-freedombox.conf',
+        ])
+        self.add(dropin_configs)
 
+        firewall = Firewall('firewall-radicale', info.name,
+                            ports=['http', 'https'], is_external=True)
+        self.add(firewall)
 
-def disable():
-    """Disable the module."""
-    actions.superuser_run('radicale', ['disable'])
-    frontpage.remove_shortcut('radicale')
+        webserver = Webserver('webserver-radicale', 'radicale2-freedombox',
+                              urls=['https://{host}/radicale'])
+        self.add(webserver)
+
+        uwsgi = Uwsgi('uwsgi-radicale', 'radicale')
+        self.add(uwsgi)
+
+        users_and_groups = UsersAndGroups('users-and-groups-radicale',
+                                          reserved_usernames=['radicale'])
+        self.add(users_and_groups)
+
+        backup_restore = BackupRestore('backup-restore-radicale',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    def enable(self):
+        """Fix missing directories before enabling radicale."""
+        privileged.fix_paths()
+        super().enable()
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if not old_version:
+            self.enable()
+
+    def force_upgrade(self, packages):
+        """Force upgrade radicale to resolve conffile prompt."""
+        if 'radicale' not in packages:
+            return False
+
+        # Allow upgrade from 2.* to newer 2.* and 3.*
+        package = packages['radicale']
+        if Version(package['new_version']) > Version('4~'):
+            return False
+
+        rights = get_rights_value()
+        install(['radicale'], force_configuration='new')
+        privileged.configure(rights)
+
+        return True
 
 
 def load_augeas():
@@ -129,16 +141,9 @@ def get_rights_value():
     """Returns the current Rights value."""
     aug = load_augeas()
     value = aug.get('/files' + CONFIG_FILE + '/rights/type')
+
+    if value == 'from_file':
+        # Default rights file is equivalent to owner_only.
+        value = 'owner_only'
+
     return value
-
-
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
-
-    results.append(action_utils.diagnose_port_listening(5232, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(5232, 'tcp6'))
-    results.extend(action_utils.diagnose_url_on_all(
-        'https://{host}/radicale', check_certificate=False))
-
-    return results

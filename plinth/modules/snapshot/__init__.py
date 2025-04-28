@@ -1,66 +1,139 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Plinth module to manage filesystem snapshots.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to manage filesystem snapshots."""
 
-import json
+import pathlib
 
-from django.utils.translation import ugettext_lazy as _
+import augeas
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import menu
+from plinth.modules import storage
+from plinth.modules.backups.components import BackupRestore
+from plinth.package import Packages
 
-version = 1
+from . import manifest, privileged
 
-managed_packages = ['snapper']
-
-name = _('Storage Snapshots')
-
-description = [
-    _('Snapshots allows creating and managing filesystem snapshots. These can '
-      'be used to roll back the system to a previously known good state in '
-      'case of unwanted changes to the system.'),
-    _('Automatic snapshots are taken every hour, day, month and year. Older '
-      'snapshots are automatically deleted keeping 10 of each kind and 50 in '
-      'total. Although snapshots are efficient and only store the '
-      'differences, they may be deleted to reclaim free space.  Individual '
-      'files from older snapshots can be accessed by visiting ".snapshots" '
-      'directory in the filesystem. Snapshots are not a replacement for '
-      'backups.')
+_description = [
+    _('Snapshots allows creating and managing btrfs file system snapshots. '
+      'These can be used to roll back the system to a previously known '
+      'good state in case of unwanted changes to the system.'),
+    # Translators: xgettext:no-python-format
+    _('Snapshots are taken periodically (called timeline snapshots) and also '
+      'before and after a software installation. Older snapshots will be '
+      'automatically cleaned up according to the settings below.'),
+    _('Snapshots currently work on btrfs file systems only and on the root '
+      'partition only. Snapshots are not a replacement for '
+      '<a href="/plinth/sys/backups">backups</a> since '
+      'they can only be stored on the same partition. ')
 ]
 
-service = None
+DEFAULT_FILE = '/etc/default/snapper'
+
+fs_types_supported = ['btrfs']
 
 
-def init():
-    """Initialize the module."""
-    menu = main_menu.get('system')
-    menu.add_urlname(name, 'glyphicon-film', 'snapshot:index')
+class SnapshotApp(app_module.App):
+    """FreedomBox app for snapshots."""
+
+    app_id = 'snapshot'
+
+    _version = 5
+
+    can_be_disabled = False
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True, name=_('Storage Snapshots'),
+                               icon='fa-film', description=_description,
+                               manual_page='Snapshots')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-snapshot', info.name, None, info.icon,
+                              'snapshot:index', parent_url_name='system:data',
+                              order=40)
+        self.add(menu_item)
+
+        packages = Packages('packages-snapshot', ['snapper'])
+        self.add(packages)
+
+        backup_restore = SnapshotBackupRestore('backup-restore-snapshot',
+                                               **manifest.backup)
+        self.add(backup_restore)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if is_supported():
+            privileged.setup(old_version)
+            self.enable()
 
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'snapshot', ['setup'])
+class SnapshotBackupRestore(BackupRestore):
+    """Component to backup/restore snapshot module."""
+
+    def restore_post(self, packet):
+        """Run after restore."""
+        privileged.kill_daemon()
 
 
-def is_timeline_snapshots_enabled():
-    """Return whether timeline snapshots are enabled."""
-    output = actions.superuser_run('snapshot', ['get-config'])
-    output = json.loads(output)
-    return output['TIMELINE_CREATE'] == 'yes'
+def is_supported():
+    """Return whether snapshots are support on current setup."""
+    fs_type = storage.get_filesystem_type()
+    # Check that / is not a bind mounted btrfs filesystem similar to how
+    # snapper does the check: https://github.com/openSUSE/snapper/blob/
+    # 77eb6565d3d8df95a06cd52ce31174d98994939c/snapper/BtrfsUtils.cc#L61
+    root_inode_number = pathlib.Path('/').stat().st_ino
+    return fs_type in fs_types_supported and root_inode_number == 256
+
+
+def load_augeas():
+    """Initialize Augeas."""
+    aug = augeas.Augeas(flags=augeas.Augeas.NO_LOAD +
+                        augeas.Augeas.NO_MODL_AUTOLOAD)
+
+    # shell-script config file lens
+    aug.set('/augeas/load/Shellvars/lens', 'Shellvars.lns')
+    aug.set('/augeas/load/Shellvars/incl[last() + 1]', DEFAULT_FILE)
+    aug.load()
+    return aug
+
+
+def is_apt_snapshots_enabled(aug):
+    """Return whether APT snapshots is enabled."""
+    value = aug.get('/files' + DEFAULT_FILE + '/DISABLE_APT_SNAPSHOT')
+    return value != 'yes'
+
+
+def get_configuration():
+    """Return snapper configuration."""
+    aug = load_augeas()
+    output = privileged.get_config()
+
+    def get_boolean_choice(status):
+        return ('yes', 'Enabled') if status else ('no', 'Disabled')
+
+    def get_max_from_range(key):
+        return output[key].split('-')[-1]
+
+    return {
+        'enable_timeline_snapshots':
+            get_boolean_choice(output['TIMELINE_CREATE'] == 'yes'),
+        'enable_software_snapshots':
+            get_boolean_choice(is_apt_snapshots_enabled(aug)),
+        'hourly_limit':
+            get_max_from_range('TIMELINE_LIMIT_HOURLY'),
+        'daily_limit':
+            get_max_from_range('TIMELINE_LIMIT_DAILY'),
+        'weekly_limit':
+            get_max_from_range('TIMELINE_LIMIT_WEEKLY'),
+        'monthly_limit':
+            get_max_from_range('TIMELINE_LIMIT_MONTHLY'),
+        'yearly_limit':
+            get_max_from_range('TIMELINE_LIMIT_YEARLY'),
+        'free_space':
+            output['FREE_LIMIT'],
+    }

@@ -1,34 +1,18 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Discover, load and manage Plinth modules
+Discover, load and manage FreedomBox applications.
 """
 
 import collections
-import django
 import importlib
 import logging
-import os
+import pathlib
 import re
 
+import django
+
 from plinth import cfg
-from plinth import setup
-from plinth.signals import pre_module_loading, post_module_loading
+from plinth.signals import pre_module_loading
 
 logger = logging.getLogger(__name__)
 
@@ -49,66 +33,16 @@ def load_modules():
     import them from modules directory.
     """
     pre_module_loading.send_robust(sender="module_loader")
-    modules = {}
     for module_import_path in get_modules_to_load():
-        logger.debug('Importing %s', module_import_path)
         module_name = module_import_path.split('.')[-1]
         try:
-            modules[module_name] = importlib.import_module(module_import_path)
+            loaded_modules[module_name] = importlib.import_module(
+                module_import_path)
         except Exception as exception:
             logger.exception('Could not import %s: %s', module_import_path,
                              exception)
-            if cfg.debug:
+            if cfg.develop:
                 raise
-
-    ordered_modules = []
-    remaining_modules = dict(modules)  # Make a copy
-    for module_name in modules:
-        if module_name not in remaining_modules:
-            continue
-
-        module = remaining_modules.pop(module_name)
-        try:
-            _insert_modules(module_name, module, remaining_modules,
-                            ordered_modules)
-        except KeyError:
-            logger.error('Unsatified dependency for module - %s',
-                         module_name)
-
-    logger.info('Module load order - %s', ordered_modules)
-
-    for module_name in ordered_modules:
-        _initialize_module(module_name, modules[module_name])
-        loaded_modules[module_name] = modules[module_name]
-
-    post_module_loading.send_robust(sender="module_loader")
-
-
-def _insert_modules(module_name, module, remaining_modules, ordered_modules):
-    """Insert modules into a list based on dependency order"""
-    if module_name in ordered_modules:
-        return
-
-    dependencies = []
-    try:
-        dependencies = module.depends
-    except AttributeError:
-        pass
-
-    for dependency in dependencies:
-        if dependency in ordered_modules:
-            continue
-
-        try:
-            module = remaining_modules.pop(dependency)
-        except KeyError:
-            logger.error('Not found or circular dependency - %s, %s',
-                         module_name, dependency)
-            raise
-
-        _insert_modules(dependency, module, remaining_modules, ordered_modules)
-
-    ordered_modules.append(module_name)
 
 
 def _include_module_urls(module_import_path, module_name):
@@ -117,32 +51,49 @@ def _include_module_urls(module_import_path, module_name):
     url_module = module_import_path + '.urls'
     try:
         urls.urlpatterns += [
-            django.conf.urls.url(
-                r'', django.conf.urls.include((url_module, module_name)))]
+            django.urls.re_path(r'',
+                                django.urls.include((url_module, module_name)))
+        ]
     except ImportError:
         logger.debug('No URLs for %s', module_name)
-        if cfg.debug:
+        if cfg.develop:
             raise
 
 
-def _initialize_module(module_name, module):
-    """Call initialization method in the module if it exists"""
-    # Perform setup related initialization on the module
-    setup.init(module_name, module)
+def _get_modules_enabled_paths():
+    """Return list of paths from which enabled modules list must be read."""
+    return [
+        pathlib.Path('/usr/share/freedombox/modules-enabled/'),
+        pathlib.Path('/etc/plinth/modules-enabled/'),  # For compatibility
+        pathlib.Path('/etc/freedombox/modules-enabled/'),
+    ]
 
-    try:
-        init = module.init
-    except AttributeError:
-        logger.debug('No init() for module - %s', module.__name__)
-        return
 
-    try:
-        init()
-    except Exception as exception:
-        logger.exception('Exception while running init for %s: %s',
-                         module, exception)
-        if cfg.debug:
-            raise
+def _get_modules_enabled_files_to_read():
+    """Return the list of files containing modules import paths."""
+    module_files = {}
+    for path in _get_modules_enabled_paths():
+        directory = pathlib.Path(path)
+        files = list(directory.glob('*'))
+        for file_ in files:
+            # Omit hidden or backup files
+            if file_.name.startswith('.') or '.dpkg' in file_.name:
+                continue
+
+            if file_.is_symlink() and str(file_.resolve()) == '/dev/null':
+                module_files.pop(file_.name, None)
+                continue
+
+            module_files[file_.name] = file_
+
+    if module_files:
+        return module_files.values()
+
+    # 'make build install' has not been executed yet. Pickup files to load from
+    # local module directories.
+    directory = pathlib.Path(__file__).parent
+    glob_pattern = 'modules/*/data/usr/share/freedombox/modules-enabled/*'
+    return list(directory.glob(glob_pattern))
 
 
 def get_modules_to_load():
@@ -152,21 +103,51 @@ def get_modules_to_load():
         return _modules_to_load
 
     modules = []
-    module_directory = os.path.join(cfg.config_dir, 'modules-enabled')
-
-    # Omit hidden files
-    file_names = [file_name
-                  for file_name in os.listdir(module_directory)
-                  if not file_name.startswith('.') and '.dpkg' not in file_name]
-
-    for file_name in file_names:
-        full_file_name = os.path.join(module_directory, file_name)
-        with open(full_file_name, 'r') as file_handle:
-            for line in file_handle:
-                line = re.sub('#.*', '', line)
-                line = line.strip()
-                if line:
-                    modules.append(line)
+    for file_ in _get_modules_enabled_files_to_read():
+        module = _read_module_import_paths_from_file(file_)
+        if module:
+            modules.append(module)
 
     _modules_to_load = modules
     return modules
+
+
+def get_module_import_path(module_name: str) -> str:
+    """Return the import path for a module."""
+    import_path_file = None
+    for path in _get_modules_enabled_paths():
+        file_ = path / module_name
+        if file_.exists():
+            import_path_file = file_
+
+        if file_.is_symlink() and str(file_.resolve()) == '/dev/null':
+            import_path_file = None
+
+    if not import_path_file:
+        # 'make build install' has not been executed yet. Pickup files to load
+        # from local module directories.
+        directory = pathlib.Path(__file__).parent
+        import_path_file = (directory /
+                            f'modules/{module_name}/data/usr/share/'
+                            f'freedombox/modules-enabled/{module_name}')
+
+    if not import_path_file:
+        raise ValueError('Unknown module')
+
+    import_path = _read_module_import_paths_from_file(import_path_file)
+    if not import_path:
+        raise ValueError('Module disabled')
+
+    return import_path
+
+
+def _read_module_import_paths_from_file(file_path: pathlib.Path) -> str | None:
+    """Read a module's import path from a file."""
+    with file_path.open() as file_handle:
+        for line in file_handle:
+            line = re.sub('#.*', '', line)
+            line = line.strip()
+            if line:
+                return line
+
+    return None

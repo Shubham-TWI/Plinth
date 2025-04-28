@@ -1,38 +1,25 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Django middleware to redirect to firstboot wizard if it has not be run
 yet.
 """
 
-from django.http.response import HttpResponseRedirect
-from django.urls import reverse
-from django.conf import settings
 import logging
 
+from django.conf import settings
+from django.http.response import HttpResponseRedirect
+from django.urls import reverse
+from django.utils.deprecation import MiddlewareMixin
+
+from plinth import setup
 from plinth.modules import first_boot
+from plinth.utils import is_user_admin
 
 LOGGER = logging.getLogger(__name__)
 
 
-class FirstBootMiddleware(object):
+class FirstBootMiddleware(MiddlewareMixin):
     """Forward to firstboot page if firstboot isn't finished yet."""
-
     @staticmethod
     def process_request(request):
         """Handle a request as Django middleware request handler."""
@@ -47,8 +34,24 @@ class FirstBootMiddleware(object):
         if user_requests_help:
             return
 
+        # Don't interfere with first setup progress page. When first setup is
+        # still running, no apps may have provided the first boot steps. This
+        # will result in first boot wizard getting marked as completed
+        # prematurely.
+        if setup.is_first_setup_running:
+            return
+
         firstboot_completed = first_boot.is_completed()
         user_requests_firstboot = first_boot.is_firstboot_url(request.path)
+
+        # If user requests a step other than the welcome step, verify that they
+        # indeed completed the secret verification by looking at the session.
+        if (user_requests_firstboot and
+                not request.path.startswith(reverse('first_boot:welcome')) and
+                first_boot.firstboot_wizard_secret_exists() and
+                not request.session.get('firstboot_secret_provided', False) and
+                not is_user_admin(request)):
+            return HttpResponseRedirect(reverse('first_boot:welcome'))
 
         # Redirect to first boot if requesting normal page and first
         # boot is not complete.

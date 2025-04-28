@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
 /*
 #
-# This file is part of Plinth.
+# This file is part of FreedomBox.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -42,10 +43,23 @@
 # THE SOFTWARE.
 */
 
+// Provide compatibility with jQuery Core >= 3.5 by expanding HTML code similar
+// to how it was done before jQuery Core < 3.5. This code was removed because it
+// is potentially insecure when the HTML code being parsed is coming from the
+// user input. See: https://jquery.com/upgrade-guide/3.5/ . JSXC >= 4.0 likely
+// does not need this.
+var rxhtmlTag = /<(?!area|br|col|embed|hr|img|input|link|meta|param)(([a-z][^\/\0>\x20\t\r\n\f]*)[^>]*)\/>/gi;
+jQuery.htmlPrefilter = function(html) {
+    return html.replace(rxhtmlTag, "<$1></$2>");
+};
+
 $(function() {
+    const body = document.querySelector('body');
+    const root = body.getAttribute('data-jsxc-root');
+    const domain = body.getAttribute('data-domain');
     var settings = {
         url: '/bosh/',
-        domain: plinth_settings.domainname
+        domain: domain
     };
 
     jsxc.init({
@@ -57,7 +71,7 @@ $(function() {
         },
         checkFlash: false,
         rosterAppend: 'body',
-        root: plinth_settings.jsxc_root,
+        root: root,
         otr: {
             debug: true,
             SEND_WHITESPACE_TAG: true,
@@ -89,12 +103,13 @@ $(function() {
         formElements.prop('disabled', true);
         $('.submit').hide();
         $('.logout').show();
-    }
+    };
+
     var logged_out_state = function() {
         formElements.prop('disabled', false);
         $('.submit').show();
         $('.logout').hide();
-    }
+    };
 
     $(document).on('close.dialog.jsxc', function() {
         jsxc.debug('Event triggered close.dialog.jsxc');

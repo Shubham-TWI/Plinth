@@ -1,127 +1,114 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure a Deluge web client."""
 
-"""
-Plinth module to configure a Deluge web client.
-"""
+from django.utils.translation import gettext_lazy as _
 
-from django.utils.translation import ugettext_lazy as _
+from plinth import app as app_module
+from plinth import frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import (Firewall,
+                                                FirewallLocalProtection)
+from plinth.modules.users import add_user_to_share_group
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages
 
-from plinth import actions
-from plinth import action_utils
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from plinth.modules.users import create_group, register_group
-from .manifest import clients
+from . import manifest, privileged
 
-
-version = 2
-
-service = None
-
-managed_services = ['deluge-web']
-
-managed_packages = ['deluged', 'deluge-web']
-
-name = _('Deluge')
-
-short_description = _('BitTorrent Web Client')
-
-description = [
+_description = [
     _('Deluge is a BitTorrent client that features a Web UI.'),
-
-    _('When enabled, the Deluge web client will be available from '
-      '<a href="/deluge">/deluge</a> path on the web server. The '
-      'default password is \'deluge\', but you should log in and change '
-      'it immediately after enabling this service.')
+    _('The default password is \'deluge\', but you should log in and '
+      'change it immediately after enabling this service.')
 ]
 
-group = ('bit-torrent', _('Download files using BitTorrent applications'))
-
-reserved_usernames = ['debian-deluged']
-
-clients = clients
+SYSTEM_USER = 'debian-deluged'
 
 
-def init():
-    """Initialize the Deluge module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-magnet',
-                     'deluge:index', short_description)
+class DelugeApp(app_module.App):
+    """FreedomBox app for Deluge."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0], name, ports=['http', 'https'],
-            is_external=True, is_enabled=is_enabled, enable=enable,
-            disable=disable)
+    app_id = 'deluge'
 
-        if is_enabled():
-            add_shortcut()
-            register_group(group)
+    _version = 8
 
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'deluge', ['enable'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0], name, ports=['http', 'https'],
-            is_external=True, is_enabled=is_enabled, enable=enable,
-            disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
-    create_group(group[0])
+        groups = {
+            'bit-torrent': _('Download files using BitTorrent applications')
+        }
 
+        info = app_module.Info(
+            app_id=self.app_id, version=self._version, name=_('Deluge'),
+            icon_filename='deluge',
+            short_description=_('BitTorrent Web Client'),
+            description=_description, manual_page='Deluge',
+            clients=manifest.clients,
+            donation_url='https://www.patreon.com/deluge_cas')
+        self.add(info)
 
-def add_shortcut():
-    frontpage.add_shortcut('deluge', name, short_description, url='/deluge',
-                           login_required=True)
+        menu_item = menu.Menu('menu-deluge', info.name, info.short_description,
+                              info.icon_filename, 'deluge:index',
+                              parent_url_name='apps')
+        self.add(menu_item)
 
+        shortcut = frontpage.Shortcut('shortcut-deluge', info.name,
+                                      short_description=info.short_description,
+                                      url='/deluge', icon=info.icon_filename,
+                                      clients=info.clients,
+                                      login_required=True,
+                                      allowed_groups=list(groups))
+        self.add(shortcut)
 
-def is_enabled():
-    """Return whether the module is enabled."""
-    return (action_utils.webserver_is_enabled('deluge-plinth') and
-            action_utils.service_is_enabled('deluge-web'))
+        packages = Packages('packages-deluge', ['deluged', 'deluge-web'])
+        self.add(packages)
 
+        dropin_configs = DropinConfigs(
+            'dropin-configs-deluge',
+            ['/etc/apache2/conf-available/deluge-plinth.conf'])
+        self.add(dropin_configs)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('deluge', ['enable'])
-    add_shortcut()
+        firewall = Firewall('firewall-deluge', info.name,
+                            ports=['http', 'https'], is_external=True)
+        self.add(firewall)
 
+        firewall_local_protection = FirewallLocalProtection(
+            'firewall-local-protection-deluge', ['8112'])
+        self.add(firewall_local_protection)
 
-def disable():
-    """Disable the module."""
-    actions.superuser_run('deluge', ['disable'])
-    frontpage.remove_shortcut('deluge')
+        webserver = Webserver('webserver-deluge', 'deluge-plinth',
+                              urls=['https://{host}/deluge'])
+        self.add(webserver)
 
+        daemon = Daemon('daemon-deluged', 'deluged',
+                        listen_ports=[(58846, 'tcp4')])
+        self.add(daemon)
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+        daemon_web = Daemon('daemon-deluge-web', 'deluge-web',
+                            listen_ports=[(8112, 'tcp4')])
+        self.add(daemon_web)
 
-    results.append(action_utils.diagnose_port_listening(8112, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(8112, 'tcp6'))
-    results.extend(action_utils.diagnose_url_on_all(
-        'https://{host}/deluge', check_certificate=False))
+        users_and_groups = UsersAndGroups('users-and-groups-deluge',
+                                          reserved_usernames=[SYSTEM_USER],
+                                          groups=groups)
+        self.add(users_and_groups)
 
-    return results
+        backup_restore = BackupRestore('backup-restore-deluge',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        add_user_to_share_group(SYSTEM_USER)
+        privileged.setup()
+        if not old_version:
+            self.enable()
+
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()

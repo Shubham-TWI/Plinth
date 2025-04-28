@@ -1,76 +1,63 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Views for the Matrix Synapse module.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Views for the Matrix Synapse module."""
+
+import datetime
 
 from django.contrib import messages
 from django.shortcuts import redirect
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 from django.views.generic import FormView
 
-from plinth import actions
-from plinth.views import ServiceView
-from plinth.modules import matrixsynapse
+from plinth import app as app_module
 from plinth.forms import DomainSelectionForm
-from plinth.utils import get_domain_names
+from plinth.modules import matrixsynapse, names
+from plinth.modules.coturn.components import TurnConfiguration
+from plinth.views import AppView
 
+from . import get_turn_configuration, privileged
 from .forms import MatrixSynapseForm
-from . import get_public_registration_status
 
 
 class SetupView(FormView):
     """Show matrix-synapse setup page."""
+
     template_name = 'matrix-synapse-pre-setup.html'
     form_class = DomainSelectionForm
     success_url = reverse_lazy('matrixsynapse:index')
 
     def form_valid(self, form):
         """Handle valid form submission."""
-        domain_name = form.cleaned_data['domain_name']
-        actions.superuser_run('matrixsynapse',
-                              ['setup', '--domain-name', domain_name])
-
+        matrixsynapse.setup_domain(form.cleaned_data['domain_name'])
         return super().form_valid(form)
 
     def get_context_data(self, *args, **kwargs):
         """Provide context data to the template."""
         context = super().get_context_data(**kwargs)
+        app = app_module.App.get('matrixsynapse')
 
-        context['title'] = matrixsynapse.name
-        context['description'] = matrixsynapse.description
-        context['domain_names'] = get_domain_names()
+        context['title'] = app.info.name
+        context['app_info'] = app.info
+        context['domain_names'] = names.components.DomainName.list_names(
+            'matrix-synapse-plinth')
 
         return context
 
 
-class MatrixSynapseServiceView(ServiceView):
+class MatrixSynapseAppView(AppView):
     """Show matrix-synapse service page."""
-    service_id = matrixsynapse.managed_services[0]
+
+    app_id = 'matrixsynapse'
     template_name = 'matrix-synapse.html'
-    description = matrixsynapse.description
-    diagnostics_module_name = 'matrixsynapse'
     form_class = MatrixSynapseForm
 
     def dispatch(self, request, *args, **kwargs):
         """Redirect to setup page if setup is not done yet."""
-        if not matrixsynapse.is_setup():
-            return redirect('matrixsynapse:setup')
+        status = self.get_common_status()
+        if status['is_enabled']:
+            # App is disabled when uninstalling
+            if not matrixsynapse.is_setup():
+                return redirect('matrixsynapse:setup')
 
         return super().dispatch(request, *args, **kwargs)
 
@@ -78,49 +65,87 @@ class MatrixSynapseServiceView(ServiceView):
         """Add additional context data for template."""
         context = super().get_context_data(*args, **kwargs)
         context['domain_name'] = matrixsynapse.get_configured_domain_name()
-        context['clients'] = matrixsynapse.clients
+        context['certificate_status'] = matrixsynapse.get_certificate_status()
+        context['config'] = privileged.get_config()
+        tokens = privileged.list_registration_tokens()
+        for token in tokens:
+            if token['expiry_time']:
+                date = datetime.datetime.utcfromtimestamp(
+                    token['expiry_time'] / 1000)
+                token['expiry_time'] = date
+
+        context['registration_tokens'] = tokens
         return context
 
     def get_initial(self):
         """Return the values to fill in the form."""
         initial = super().get_initial()
+        turn_config, managed = get_turn_configuration()
+        config = privileged.get_config()
         initial.update({
-            'enable_public_registration': get_public_registration_status()
+            'enable_public_registration':
+                config['public_registration'],
+            'registration_verification':
+                config['registration_verification'] or 'disabled',
+            'enable_managed_turn':
+                managed,
+            'turn_uris':
+                '\n'.join(turn_config.uris),
+            'shared_secret':
+                turn_config.shared_secret
         })
         return initial
+
+    @staticmethod
+    def _handle_turn_configuration(old_config, new_config):
+        if not new_config['enable_managed_turn']:
+            new_turn_uris = new_config['turn_uris'].splitlines()
+            new_shared_secret = new_config['shared_secret']
+
+            turn_config_changed = \
+                old_config['turn_uris'] != new_turn_uris or \
+                old_config['shared_secret'] != new_shared_secret
+
+            if turn_config_changed:
+                matrixsynapse.update_turn_configuration(
+                    TurnConfiguration(None, new_turn_uris, new_shared_secret),
+                    managed=False)
+        else:
+            # Remove overridden turn configuration
+            matrixsynapse.update_turn_configuration(TurnConfiguration(),
+                                                    managed=False)
 
     def form_valid(self, form):
         """Handle valid form submission."""
         old_config = self.get_initial()
         new_config = form.cleaned_data
-        app_same = old_config['is_enabled'] == new_config['is_enabled']
-        pubreg_same = old_config['enable_public_registration'] == \
-            new_config['enable_public_registration']
 
-        if app_same and pubreg_same:
-            # TODO: find a more reliable/official way to check whether the
-            # request has messages attached.
-            if not self.request._messages._queued_messages:
-                messages.info(self.request, _('Setting unchanged'))
-        elif not app_same:
-            if new_config['is_enabled']:
-                self.service.enable()
-                messages.success(self.request, _('Application enabled'))
-            else:
-                self.service.disable()
-                messages.success(self.request, _('Application disabled'))
+        def changed(prop):
+            return old_config[prop] != new_config[prop]
 
-        if not pubreg_same:
-            # note action public_registration restarts, if running now
-            if new_config['enable_public_registration']:
-                actions.superuser_run('matrixsynapse',
-                                      ['public_registration', 'enable'])
-                messages.success(self.request,
-                                 _('Public registration enabled'))
-            else:
-                actions.superuser_run('matrixsynapse',
-                                      ['public_registration', 'disable'])
-                messages.success(self.request,
-                                 _('Public registration disabled'))
+        is_changed = False
+        if (changed('enable_public_registration')
+                or changed('registration_verification')):
+            try:
+                privileged.set_config(
+                    public_registration=new_config[
+                        'enable_public_registration'],
+                    registration_verification=new_config[
+                        'registration_verification'])
+                is_changed = True
+            except ProcessLookupError:
+                # Matrix Synapse server is not running
+                messages.error(
+                    self.request,
+                    _('Registration configuration cannot be updated when app '
+                      'is disabled.'))
 
-        return super(ServiceView, self).form_valid(form)
+        if changed('enable_managed_turn') or changed('turn_uris') or \
+           changed('shared_secret'):
+            self._handle_turn_configuration(old_config, new_config)
+            is_changed = True
+
+        if is_changed:
+            messages.success(self.request, _('Configuration updated'))
+
+        return super().form_valid(form)

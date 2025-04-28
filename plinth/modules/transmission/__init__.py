@@ -1,134 +1,149 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module to configure Transmission server
+FreedomBox app to configure Transmission server.
 """
 
-import json
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
 
-from django.utils.translation import ugettext_lazy as _
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import (Firewall,
+                                                FirewallLocalProtection)
+from plinth.modules.users import add_user_to_share_group
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages
+from plinth.utils import format_lazy
 
-from plinth import service as service_module
-from plinth import action_utils, actions, frontpage
-from plinth.menu import main_menu
-from plinth.modules.users import create_group, register_group
-from .manifest import clients
+from . import manifest, privileged
 
-version = 2
-
-managed_services = ['transmission-daemon']
-
-managed_packages = ['transmission-daemon']
-
-name = _('Transmission')
-
-short_description = _('BitTorrent Web Client')
-
-description = [
+_description = [
+    _('Transmission is a BitTorrent client with a web interface.'),
     _('BitTorrent is a peer-to-peer file sharing protocol. '
-      'Transmission daemon handles Bitorrent file sharing.  Note that '
-      'BitTorrent is not anonymous.'),
-    _('Access the web interface at <a href="/transmission">/transmission</a>.')
+      'Note that BitTorrent is not anonymous.'),
+    _('Please do not change the default port of the Transmission daemon.'),
+    format_lazy(
+        _('Compared to <a href="{deluge_url}">'
+          'Deluge</a>, Transmission is simpler and lightweight but is less '
+          'customizable.'), deluge_url=reverse_lazy('deluge:index')),
+    format_lazy(
+        _('It can be accessed by <a href="{users_url}">any user</a> on '
+          '{box_name} belonging to the bit-torrent group.'),
+        box_name=_(cfg.box_name), users_url=reverse_lazy('users:index')),
+    format_lazy(
+        _('In addition to the web interface, mobile and desktop apps can also '
+          'be used to remotely control Transmission on {box_name}. To '
+          'configure remote control apps, use the URL '
+          '<a href="/transmission-remote/rpc">/transmission-remote/rpc</a>.'),
+        box_name=_(cfg.box_name)),
+    format_lazy(
+        _('<a href="{samba_url}">Samba</a> shares can be set as the '
+          'default download directory from the dropdown menu below.'),
+        samba_url=reverse_lazy('samba:index')),
+    format_lazy(
+        _('After a download has completed, you can also access your files '
+          'using the <a href="{sharing_url}">Sharing</a> app.'),
+        sharing_url=reverse_lazy('sharing:index'))
 ]
 
-clients = clients
-
-reserved_usernames = ['debian-transmission']
-
-group = ('bit-torrent', _('Download files using BitTorrent applications'))
-
-service = None
+SYSTEM_USER = 'debian-transmission'
 
 
-def init():
-    """Intialize the Transmission module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-save', 'transmission:index',
-                     short_description)
+class TransmissionApp(app_module.App):
+    """FreedomBox app for Transmission."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(managed_services[0], name, ports=[
-            'http', 'https'
-        ], is_external=True, is_enabled=is_enabled, enable=enable,
-                                         disable=disable)
+    app_id = 'transmission'
 
-        if is_enabled():
-            add_shortcut()
-            register_group(group)
+    _version = 7
 
+    DAEMON = 'transmission-daemon'
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-    new_configuration = {
-        'rpc-whitelist-enabled': False,
-        'rpc-authentication-required': False
-    }
-    helper.call('post', actions.superuser_run, 'transmission',
-                ['merge-configuration'],
-                input=json.dumps(new_configuration).encode())
+        groups = {
+            'bit-torrent': _('Download files using BitTorrent applications')
+        }
 
-    helper.call('post', actions.superuser_run, 'transmission', ['enable'])
-    global service
-    if service is None:
-        service = service_module.Service(managed_services[0], name, ports=[
-            'http', 'https'
-        ], is_external=True, is_enabled=is_enabled, enable=enable,
-                                         disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
-    create_group(group[0])
+        info = app_module.Info(
+            app_id=self.app_id, version=self._version, name=_('Transmission'),
+            icon_filename='transmission',
+            short_description=_('BitTorrent Web Client'),
+            description=_description, manual_page='Transmission',
+            clients=manifest.clients,
+            donation_url='https://transmissionbt.com/donate/')
+        self.add(info)
 
+        menu_item = menu.Menu('menu-transmission', info.name,
+                              info.short_description, info.icon_filename,
+                              'transmission:index', parent_url_name='apps')
+        self.add(menu_item)
 
-def add_shortcut():
-    frontpage.add_shortcut('transmission', name,
-                           short_description=short_description,
-                           url='/transmission', login_required=True)
+        shortcut = frontpage.Shortcut(
+            'shortcut-transmission', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            url='/transmission', clients=info.clients, login_required=True,
+            allowed_groups=list(groups))
+        self.add(shortcut)
 
+        packages = Packages('packages-transmission', ['transmission-daemon'])
+        self.add(packages)
 
-def is_enabled():
-    """Return whether the module is enabled."""
-    return (action_utils.service_is_enabled('transmission-daemon') and
-            action_utils.webserver_is_enabled('transmission-plinth'))
+        dropin_configs = DropinConfigs('dropin-configs-transmission', [
+            '/etc/apache2/conf-available/transmission-plinth.conf',
+        ])
+        self.add(dropin_configs)
 
+        firewall = Firewall('firewall-transmission', info.name,
+                            ports=['http', 'https',
+                                   'transmission-client'], is_external=True)
+        self.add(firewall)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('transmission', ['enable'])
-    add_shortcut()
+        firewall_local_protection = FirewallLocalProtection(
+            'firewall-local-protection-transmission', ['9091'])
+        self.add(firewall_local_protection)
 
+        webserver = Webserver('webserver-transmission', 'transmission-plinth',
+                              urls=['https://{host}/transmission'],
+                              last_updated_version=6)
+        self.add(webserver)
 
-def disable():
-    """Enable the module."""
-    actions.superuser_run('transmission', ['disable'])
-    frontpage.remove_shortcut('transmission')
+        daemon = Daemon(
+            'daemon-transmission', self.DAEMON, listen_ports=[
+                (9091, 'tcp4'),
+                (51413, 'tcp4'),
+                (51413, 'tcp6'),
+                (51413, 'udp4'),
+            ])
+        self.add(daemon)
 
+        users_and_groups = UsersAndGroups('users-and-groups-transmission',
+                                          reserved_usernames=[SYSTEM_USER],
+                                          groups=groups)
+        self.add(users_and_groups)
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+        backup_restore = BackupRestore('backup-restore-transmission',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
-    results.append(action_utils.diagnose_port_listening(9091, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(9091, 'tcp6'))
-    results.extend(
-        action_utils.diagnose_url_on_all('https://{host}/transmission',
-                                         check_certificate=False))
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
 
-    return results
+        if old_version and old_version <= 3 and self.is_enabled():
+            self.get_component('firewall-transmission').enable()
+
+        new_configuration = {
+            'rpc-whitelist-enabled': False,
+            'rpc-authentication-required': False
+        }
+        privileged.merge_configuration(new_configuration)
+        add_user_to_share_group(SYSTEM_USER, TransmissionApp.DAEMON)
+
+        if not old_version:
+            self.enable()

@@ -1,113 +1,96 @@
-{% extends "simple_service.html" %}
+{% extends "app.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load i18n %}
+{% load static %}
+
+{% block page_head %}
+  <link type="text/css" rel="stylesheet"
+        href="{% static 'firewall/firewall.css' %}"/>
+{% endblock %}
 
 {% block configuration %}
 
-  <p>{% trans "Current status:" %}</p>
+  <h3>{% trans "Status" %}</h3>
 
-  {% if firewall_status == 'not_running' %}
+  <div class="table-responsive">
+    <table class='table table-autowidth'>
+      <thead>
+        <th>{% trans "Service/Port" %}</th>
+        <th>{% trans "Status" %}</th>
+      </thead>
 
-    <p>
-      {% blocktrans trimmed %}
-        Firewall daemon is not running. Please run it. Firewall comes
-        enabled by default on {{ box_name }}. On any Debian based
-        system (such as {{ box_name }}) you may run it using the
-        command 'service firewalld start' or in case of a system with
-        systemd 'systemctl start firewalld'.
-      {% endblocktrans %}
-    </p>
-
-  {% else %}
-
-    <div class="row">
-      <div class="col-lg-8">
-        <table class='table table-autowidth'>
-          <thead>
-            <th><center>{% trans "Show Ports" %}</center></th>
-            <th>{% trans "Service/Port" %}</th>
-            <th>{% trans "Status" %}</th>
-          </thead>
-
-          <tbody>
-            {% for service in services|dictsort:"name" %}
-              {% if service.ports %}
-                <tr>
-                  <td>
-                    <center>
-                      <button data-toggle="collapse"
-                              data-target=".{{service.service_id}}"
-                              class="btn btn-info btn-xs">+</button>
-                    </center>
-                  </td>
-                  <td><strong>{{ service.name }}</strong></td>
-                  <td>
-                    {% if service.is_enabled %}
-                      <span class='label label-success'>
-                        {% trans "Enabled" %}</span>
-                    {% else %}
-                      <span class='label label-warning'>
-                        {% trans "Disabled" %}</span>
-                    {% endif %}
-                  </td>
-                </tr>
-                {% for port in service.ports %}
-                  <tr class="collapse out {{service.service_id}}"
-                      style="background-color: #f9f9f9" >
-                    <td></td>
-                    <td class='cell-indented'><em>{{ port }}</em></td>
-                    <td>
-                      {% if port in internal_enabled_services and port in external_enabled_services %}
-                        <span class='label label-success'>
-                          {% trans "Permitted" %}</span>
-                      {% elif port in internal_enabled_services %}
-                        <span class='label label-warning'>
-                          {% trans "Permitted (internal only)" %}</span>
-                      {% elif port in external_enabled_services %}
-                        <span class='label label-warning'>
-                          {% trans "Permitted (external only)" %}</span>
-                      {% else %}
-                        <span class='label label-danger'>
-                          {% trans "Blocked" %}</span>
-                      {% endif %}
-                    </td>
-                  </tr>
-                {% endfor %}
-              {% endif %}
+      <tbody>
+        {% for component in components|dictsort:"name" %}
+          {% if component.ports %}
+            <tr>
+              <td class="app-name">
+                <a class="dropdown-toggle" href="#"
+                   data-toggle="collapse" role="button"
+                   data-target=".{{component.component_id}}"
+                   aria-expanded="false"
+                   aria-controls="{{component.component_id}}">
+                  {{ component.name }}</a>
+              </td>
+              <td class="app-status">
+                {% if component.is_enabled %}
+                  <span class='badge badge-success'>
+                    {% trans "Enabled" %}</span>
+                {% else %}
+                  <span class='badge badge-warning'>
+                    {% trans "Disabled" %}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% for port in component.ports_details %}
+              <tr class="collapse {{component.component_id}}">
+                <td class='service'>
+                  <span class="service-name">{{ port.name }}</span>:
+                  {% for port_number, protocol in port.details %}
+                    {{ port_number }}/{{ protocol }}
+                  {% endfor %}
+                </td>
+                <td class="service-status">
+                  {% if port.name in internal_enabled_ports and port.name in external_enabled_ports %}
+                    <span class='badge badge-success'>
+                      {% trans "Permitted" %}</span>
+                  {% elif port.name in internal_enabled_ports %}
+                    <span class='badge badge-warning'>
+                      {% trans "Permitted (internal only)" %}</span>
+                  {% elif port.name in external_enabled_ports %}
+                    <span class='badge badge-warning'>
+                      {% trans "Permitted (external only)" %}</span>
+                  {% else %}
+                    <span class='badge badge-danger'>
+                      {% trans "Blocked" %}</span>
+                  {% endif %}
+                </td>
+              </tr>
             {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
+          {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 
-    <p>
-      <em>
-        {% blocktrans trimmed %}
-          The operation of the firewall is automatic. When you enable
-          a service it is also permitted in the firewall and when you
-          disable a service it is also disabled in the firewall.
-        {% endblocktrans %}
-      </em>
-    </p>
+  <p>
+    <em>
+      {% blocktrans trimmed %}
+        The operation of the firewall is automatic. When you enable
+        a service it is also permitted in the firewall and when you
+        disable a service it is also disabled in the firewall.
+      {% endblocktrans %}
+    </em>
+  </p>
 
-  {% endif %}
+  <h3>{%trans "Advanced" %} </h3>
+  <p>
+    {% blocktrans trimmed %}
+      Advanced firewall operations such as opening custom ports are provided
+      by the <a href="/_cockpit/network/firewall">Cockpit</a> app.
+    {% endblocktrans %}
+  </p>
 
 {% endblock %}

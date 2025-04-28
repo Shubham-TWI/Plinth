@@ -1,193 +1,237 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure ejabberd server."""
 
-"""
-Plinth module to configure ejabberd server
-"""
+import json
+import logging
 
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
+
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.modules import config
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.coturn.components import TurnConfiguration, TurnConsumer
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.letsencrypt.components import LetsEncrypt
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages
+from plinth.signals import (domain_added, post_hostname_change,
+                            pre_hostname_change)
 from plinth.utils import format_lazy
 
-import logging
-import socket
+from . import manifest, privileged
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from plinth.signals import pre_hostname_change, post_hostname_change
-from plinth.signals import domainname_change
-from .manifest import clients
-
-
-version = 1
-
-managed_services = ['ejabberd']
-
-managed_packages = ['ejabberd']
-
-name = _('ejabberd')
-
-short_description = _('Chat Server')
-
-description = [
+_description = [
     _('XMPP is an open and standardized communication protocol. Here '
       'you can run and configure your XMPP server, called ejabberd.'),
-
     format_lazy(
-        _('To actually communicate, you can use the <a href="/plinth/apps/'
-          'jsxc">web client</a> or any other <a href=\'https://xmpp.org/'
+        _('To actually communicate, you can use the <a href="{jsxc_url}">'
+          'web client</a> or any other <a href=\'https://xmpp.org/'
           'software/clients\' target=\'_blank\'>XMPP client</a>. '
-          'When enabled, ejabberd can be accessed by any <a href="/plinth/sys'
-          '/users">user with a {box_name} login</a>.'),
-        box_name=_(cfg.box_name))
+          'When enabled, ejabberd can be accessed by any '
+          '<a href="{users_url}"> user with a {box_name} login</a>.'),
+        box_name=_(cfg.box_name), users_url=reverse_lazy('users:index'),
+        jsxc_url=reverse_lazy('jsxc:index')),
+    format_lazy(
+        _('ejabberd needs a STUN/TURN server for audio/video calls. '
+          'Install the <a href={coturn_url}>Coturn</a> app or configure '
+          'an external server.'), coturn_url=reverse_lazy('coturn:index'))
 ]
-
-clients = clients
-
-reserved_usernames = ['ejabberd']
-
-service = None
 
 logger = logging.getLogger(__name__)
 
 
-def init():
-    """Initialize the ejabberd module"""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-comment', 'ejabberd:index', short_description)
+class EjabberdApp(app_module.App):
+    """FreedomBox app for ejabberd."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            'ejabberd', name,
-            ports=['xmpp-client', 'xmpp-server', 'xmpp-bosh'],
-            is_external=True, is_enabled=is_enabled, enable=enable,
-            disable=disable)
-        if is_enabled():
-            add_shortcut()
-    pre_hostname_change.connect(on_pre_hostname_change)
-    post_hostname_change.connect(on_post_hostname_change)
-    domainname_change.connect(on_domainname_change)
+    app_id = 'ejabberd'
+
+    _version = 8
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(
+            app_id=self.app_id, version=self._version, depends=['coturn'],
+            name=_('ejabberd'), icon_filename='ejabberd',
+            short_description=_('Chat Server'), description=_description,
+            manual_page='ejabberd', clients=manifest.clients)
+        self.add(info)
+
+        menu_item = menu.Menu('menu-ejabberd', info.name,
+                              info.short_description, info.icon_filename,
+                              'ejabberd:index', parent_url_name='apps')
+        self.add(menu_item)
+
+        shortcut = frontpage.Shortcut(
+            'shortcut-ejabberd', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            description=info.description, manual_page=info.manual_page,
+            configure_url=reverse_lazy('ejabberd:index'), clients=info.clients,
+            login_required=True)
+        self.add(shortcut)
+
+        packages = Packages('packages-ejabberd', ['ejabberd'])
+        self.add(packages)
+
+        dropin_configs = DropinConfigs('dropin-configs-ejabberd', [
+            '/etc/apache2/conf-available/jwchat-plinth.conf',
+        ])
+        self.add(dropin_configs)
+
+        dropin_configs = DropinConfigs('dropin-config-ejabberd-avahi', [
+            '/etc/avahi/services/xmpp-server.service',
+        ], copy_only=True)
+        self.add(dropin_configs)
+
+        firewall = Firewall('firewall-ejabberd', info.name,
+                            ports=['xmpp-client', 'xmpp-server',
+                                   'xmpp-bosh'], is_external=True)
+        self.add(firewall)
+
+        webserver = Webserver('webserver-ejabberd', 'jwchat-plinth',
+                              urls=['http://{host}/bosh/'])
+        self.add(webserver)
+
+        letsencrypt = LetsEncrypt(
+            'letsencrypt-ejabberd', domains=get_domains, daemons=['ejabberd'],
+            should_copy_certificates=True,
+            private_key_path='/etc/ejabberd/letsencrypt/{domain}/ejabberd.pem',
+            certificate_path='/etc/ejabberd/letsencrypt/{domain}/ejabberd.pem',
+            user_owner='ejabberd', group_owner='ejabberd',
+            managing_app='ejabberd')
+        self.add(letsencrypt)
+
+        daemon = Daemon(
+            'daemon-ejabberd', 'ejabberd', listen_ports=[(5222, 'tcp4'),
+                                                         (5222, 'tcp6'),
+                                                         (5269, 'tcp4'),
+                                                         (5269, 'tcp6'),
+                                                         (5443, 'tcp4'),
+                                                         (5443, 'tcp6')])
+        self.add(daemon)
+
+        users_and_groups = UsersAndGroups('users-and-groups-ejabberd',
+                                          reserved_usernames=['ejabberd'])
+        self.add(users_and_groups)
+
+        backup_restore = BackupRestore('backup-restore-ejabberd',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+        turn = EjabberdTurnConsumer('turn-ejabberd')
+        self.add(turn)
+
+    @staticmethod
+    def post_init():
+        """Perform post initialization operations."""
+        pre_hostname_change.connect(on_pre_hostname_change)
+        post_hostname_change.connect(on_post_hostname_change)
+        domain_added.connect(on_domain_added)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        domainname = config.get_domainname()
+        logger.info('ejabberd service domainname - %s', domainname)
+
+        privileged.pre_install(domainname)
+        # XXX: Configure all other domain names
+        super().setup(old_version)
+        self.get_component('letsencrypt-ejabberd').setup_certificates(
+            [domainname])
+        privileged.setup(domainname)
+        if not old_version:
+            self.enable()
+
+        if not old_version or get_turn_configuration()[1]:
+            # Configure STUN/TURN only if there's a valid TLS domain set for
+            # Coturn. Do this if app is being freshly installed or if it is
+            # previously installed and configured to use STUN/TURN
+            # auto-management.
+            configuration = self.get_component(
+                'turn-ejabberd').get_configuration()
+            update_turn_configuration(configuration, force=True)
 
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    domainname = get_domainname()
-    logger.info('ejabberd service domainname - %s', domainname)
+class EjabberdTurnConsumer(TurnConsumer):
+    """Component to manage Coturn configuration for ejabberd."""
 
-    helper.call('pre', actions.superuser_run, 'ejabberd',
-                ['pre-install', '--domainname', domainname])
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'ejabberd', ['setup'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            'ejabberd', name,
-            ports=['xmpp-client', 'xmpp-server', 'xmpp-bosh'],
-            is_external=True, is_enabled=is_enabled, enable=enable,
-            disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
-
-
-def add_shortcut():
-    frontpage.add_shortcut('ejabberd', name=name,
-                           short_description=short_description,
-                           details=description,
-                           configure_url=reverse_lazy('ejabberd:index'),
-                           login_required=True)
-
-
-def is_enabled():
-    """Return whether the module is enabled."""
-    return action_utils.service_is_enabled('ejabberd')
-
-
-def get_domainname():
-    """Return the domainname"""
-    fqdn = socket.getfqdn()
-    return '.'.join(fqdn.split('.')[1:])
-
-
-def enable():
-    """Enable the module."""
-    actions.superuser_run('ejabberd', ['enable'])
-    add_shortcut()
-
-
-def disable():
-    """Enable the module."""
-    actions.superuser_run('ejabberd', ['disable'])
-    frontpage.remove_shortcut('ejabberd')
+    def on_config_change(self, config):
+        """Add or update STUN/TURN configuration."""
+        update_turn_configuration(config)
 
 
 def on_pre_hostname_change(sender, old_hostname, new_hostname, **kwargs):
-    """
-    Backup ejabberd database before hostname is changed.
-    """
+    """Backup ejabberd database before hostname is changed."""
     del sender  # Unused
     del kwargs  # Unused
+    app = app_module.App.get('ejabberd')
+    if app.needs_setup():
+        return
 
-    actions.superuser_run('ejabberd',
-                          ['pre-change-hostname',
-                           '--old-hostname', old_hostname,
-                           '--new-hostname', new_hostname])
+    privileged.pre_change_hostname(old_hostname, new_hostname)
 
 
 def on_post_hostname_change(sender, old_hostname, new_hostname, **kwargs):
     """Update ejabberd config after hostname change."""
     del sender  # Unused
     del kwargs  # Unused
+    app = app_module.App.get('ejabberd')
+    if app.needs_setup():
+        return
 
-    actions.superuser_run('ejabberd',
-                          ['change-hostname',
-                           '--old-hostname', old_hostname,
-                           '--new-hostname', new_hostname],
-                          async=True)
+    privileged.change_hostname(_run_in_background=True)
 
 
-def on_domainname_change(sender, old_domainname, new_domainname, **kwargs):
+def get_domains():
+    """Return the list of domains configured for ejabberd."""
+    app = app_module.App.get('ejabberd')
+    if app.needs_setup():
+        return []
+
+    return privileged.get_domains()
+
+
+def on_domain_added(sender, domain_type, name='', description='',
+                    services=None, **kwargs):
     """Update ejabberd config after domain name change."""
-    del sender  # Unused
-    del old_domainname  # Unused
-    del kwargs  # Unused
+    app = app_module.App.get('ejabberd')
+    if not name or app.needs_setup():
+        return
 
-    actions.superuser_run('ejabberd',
-                          ['change-domainname',
-                           '--domainname', new_domainname],
-                          async=True)
+    domains = get_domains()
+    if name not in domains:
+        privileged.add_domain(name)
+        app.get_component('letsencrypt-ejabberd').setup_certificates()
 
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+def set_domains(domains):
+    """Configure ejabberd to have this list of domains."""
+    app = app_module.App.get('ejabberd')
+    if not domains or app.needs_setup():
+        return
 
-    results.append(action_utils.diagnose_port_listening(5222, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(5222, 'tcp6'))
-    results.append(action_utils.diagnose_port_listening(5269, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(5269, 'tcp6'))
-    results.append(action_utils.diagnose_port_listening(5280, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(5280, 'tcp6'))
-    results.extend(
-        action_utils.diagnose_url_on_all('http://{host}/bosh/'))
+    privileged.set_domains(domains)
+    app.get_component('letsencrypt-ejabberd').setup_certificates()
 
-    return results
+
+def update_turn_configuration(config: TurnConfiguration, managed=True,
+                              force=False):
+    """Update ejabberd's STUN/TURN server configuration."""
+    app = app_module.App.get('ejabberd')
+    if not force and app.needs_setup():
+        return
+
+    privileged.configure_turn(json.loads(config.to_json()), managed)
+
+
+def get_turn_configuration() -> tuple[TurnConfiguration, bool]:
+    """Get the latest STUN/TURN configuration."""
+    tc, managed = privileged.get_turn_config()
+    return TurnConfiguration(tc['domain'], tc['uris'],
+                             tc['shared_secret']), managed

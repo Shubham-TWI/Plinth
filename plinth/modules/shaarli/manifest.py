@@ -1,28 +1,32 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""
+Application manifest for bind.
+"""
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth.clients import validate
+from plinth.clients import store_url
 
-clients = validate([{
+clients = [{
+    'name':
+        _('Shaarlier'),
+    'platforms': [{
+        'type': 'store',
+        'os': 'android',
+        'store_name': 'google-play',
+        'url': store_url('google-play', 'com.dimtion.shaarlier'),
+    }, {
+        'type': 'store',
+        'os': 'android',
+        'store_name': 'f-droid',
+        'url': store_url('f-droid', 'com.dimtion.shaarlier'),
+    }]
+}, {
     'name': _('Shaarli'),
     'platforms': [{
         'type': 'web',
-        'url': '/shaarli'
+        'url': '/shaarli/'
     }]
-}])
+}]
+
+backup = {'data': {'directories': ['/var/lib/shaarli/data']}}

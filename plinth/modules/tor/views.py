@@ -1,162 +1,109 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program. If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Plinth module for configuring Tor.
-"""
-from django.contrib import messages
-from django.template.response import TemplateResponse
-from django.utils.translation import ugettext_lazy as _
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app for configuring Tor."""
 
+import logging
+
+from django.utils.translation import gettext_noop
+from django.views.generic.edit import FormView
+
+from plinth import app as app_module
+from plinth import operation as operation_module
+from plinth.modules import tor
+from plinth.views import AppView
+
+from . import privileged
 from . import utils as tor_utils
 from .forms import TorForm
-from plinth import actions
-from plinth.errors import ActionError
-from plinth.modules import tor
 
 config_process = None
+logger = logging.getLogger(__name__)
 
 
-def index(request):
-    """Serve configuration page."""
-    if config_process:
-        _collect_config_result(request)
+class TorAppView(AppView):
+    """Show Tor app main page."""
 
-    status = tor_utils.get_status()
-    form = None
+    app_id = 'tor'
+    template_name = 'tor.html'
+    form_class = TorForm
+    prefix = 'tor'
 
-    if request.method == 'POST':
-        form = TorForm(request.POST, prefix='tor')
-        # pylint: disable=E1101
-        if form.is_valid():
-            _apply_changes(request, status, form.cleaned_data)
-            status = tor_utils.get_status()
-            form = TorForm(initial=status, prefix='tor')
-    else:
-        form = TorForm(initial=status, prefix='tor')
+    status = None
 
-    return TemplateResponse(request, 'tor.html', {
-        'title': tor.name,
-        'description': tor.description,
-        'clients': tor.clients,
-        'status': status,
-        'config_running': bool(config_process),
-        'form': form
-    })
+    def get_initial(self):
+        """Return the values to fill in the form."""
+        if not self.status:
+            self.status = tor_utils.get_status()
+
+        initial = super().get_initial()
+        initial.update(self.status)
+        return initial
+
+    def get_context_data(self, *args, **kwargs):
+        """Add additional context data for template."""
+        if not self.status:
+            self.status = tor_utils.get_status()
+
+        context = super().get_context_data(*args, **kwargs)
+        context['status'] = self.status
+        return context
+
+    def form_valid(self, form):
+        """Configure tor app on successful form submission."""
+        operation_module.manager.new('tor-configuration', self.app_id,
+                                     gettext_noop('Updating configuration'),
+                                     _apply_changes,
+                                     [form.initial, form.cleaned_data],
+                                     show_notification=False)
+        # Skip check for 'Settings unchanged' message by calling grandparent
+        return super(FormView, self).form_valid(form)
 
 
-def _apply_changes(request, old_status, new_status):
+def _apply_changes(old_status, new_status):
     """Try to apply changes and handle errors."""
+    logger.info('tor: applying configuration changes')
+    exception_to_update = None
+    message = None
     try:
-        __apply_changes(request, old_status, new_status)
-    except ActionError as exception:
-        messages.error(request,
-                       _('Action error: {0} [{1}] [{2}]').format(
-                           exception.args[0], exception.args[1],
-                           exception.args[2]))
+        __apply_changes(old_status, new_status)
+    except Exception as exception:
+        exception_to_update = exception
+        message = gettext_noop('Error configuring app: {error}').format(
+            error=exception)
+    else:
+        message = gettext_noop('Configuration updated.')
+
+    logger.info('tor: configuration changes completed')
+    operation = operation_module.Operation.get_operation()
+    operation.on_update(message, exception_to_update)
 
 
-def __apply_changes(request, old_status, new_status):
+def __apply_changes(old_status, new_status):
     """Apply the changes."""
-    global config_process
-    if config_process:
-        # Already running a configuration task
-        return
-
-    needs_restart = False
-    arguments = []
+    arguments = {}
+    app = app_module.App.get('tor')
+    is_enabled = app.is_enabled()
 
     if old_status['relay_enabled'] != new_status['relay_enabled']:
-        arg_value = 'enable' if new_status['relay_enabled'] else 'disable'
-        arguments.extend(['--relay', arg_value])
-        needs_restart = True
+        arguments['relay'] = new_status['relay_enabled']
 
     if old_status['bridge_relay_enabled'] != \
        new_status['bridge_relay_enabled']:
-        arg_value = 'enable'
-        if not new_status['bridge_relay_enabled']:
-            arg_value = 'disable'
-        arguments.extend(['--bridge-relay', arg_value])
-        needs_restart = True
+        arguments['bridge_relay'] = new_status['bridge_relay_enabled']
 
     if old_status['hs_enabled'] != new_status['hs_enabled']:
-        arg_value = 'enable' if new_status['hs_enabled'] else 'disable'
-        arguments.extend(['--hidden-service', arg_value])
-        needs_restart = True
-
-    if old_status['apt_transport_tor_enabled'] != \
-       new_status['apt_transport_tor_enabled']:
-        arg_value = 'disable'
-        if new_status['enabled'] and new_status['apt_transport_tor_enabled']:
-            arg_value = 'enable'
-        arguments.extend(['--apt-transport-tor', arg_value])
+        arguments['hidden_service'] = new_status['hs_enabled']
 
     if old_status['use_upstream_bridges'] != \
        new_status['use_upstream_bridges']:
-        arg_value = 'disable'
-        if new_status['enabled'] and new_status['use_upstream_bridges']:
-            arg_value = 'enable'
-        arguments.extend(['--use-upstream-bridges', arg_value])
-        needs_restart = True
+        arguments['use_upstream_bridges'] = new_status['use_upstream_bridges']
 
     if old_status['upstream_bridges'] != new_status['upstream_bridges']:
-        arguments.extend(
-            ['--upstream-bridges', new_status['upstream_bridges']])
-        needs_restart = True
-
-    if old_status['enabled'] != new_status['enabled']:
-        arg_value = 'enable' if new_status['enabled'] else 'disable'
-        arguments.extend(['--service', arg_value])
-        config_process = actions.superuser_run(
-            'tor', ['configure'] + arguments, async=True)
-        return
+        arguments['upstream_bridges'] = new_status['upstream_bridges']
 
     if arguments:
-        actions.superuser_run('tor', ['configure'] + arguments)
-        if not needs_restart:
-            messages.success(request, _('Configuration updated.'))
+        privileged.configure(**arguments)
 
-    if needs_restart and new_status['enabled']:
-        config_process = actions.superuser_run('tor', ['restart'], async=True)
-
-    if not arguments:
-        messages.info(request, _('Setting unchanged'))
-
-
-def _collect_config_result(request):
-    """Handle config process completion."""
-    global config_process
-    if not config_process:
-        return
-
-    return_code = config_process.poll()
-
-    # Config process is not complete yet
-    if return_code is None:
-        return
-
-    status = tor_utils.get_status()
-
-    tor.socks_service.notify_enabled(None, status['enabled'])
-    tor.bridge_service.notify_enabled(None, status['enabled'])
-    tor.update_hidden_service_domain(status)
-
-    if not return_code:
-        messages.success(request, _('Configuration updated.'))
-    else:
-        messages.error(request, _('An error occurred during configuration.'))
-
-    config_process = None
+        if is_enabled:
+            privileged.restart()
+            status = tor_utils.get_status()
+            tor.update_hidden_service_domain(status)

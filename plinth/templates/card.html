@@ -1,0 +1,23 @@
+{% comment %}
+# SPDX-License-Identifier: AGPL-3.0-or-later
+{% endcomment %}
+
+{% load static %}
+
+<div class="card">
+  <a href="{{ item.url }}" class="nav-link">
+    <div class="card-title">{{ item.name }}</div>
+    <div class="card-icon">
+      {% if 'fa-' in item.icon %}
+        <span class="fa {{ item.icon }}"></span>
+      {% else %}
+        {% if item.app_id %}
+          <img src="{% static item.app_id %}/icons/{{ item.icon }}.svg"/>
+        {% else %}
+          <img src="{% static 'theme/icons/' %}{{ item.icon }}.svg"/>
+        {% endif %}
+      {% endif %}
+    </div>
+    <div class="card-description">{{ item.short_description|default:'' }}</div>
+  </a>
+</div>

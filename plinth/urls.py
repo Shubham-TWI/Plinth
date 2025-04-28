@@ -1,49 +1,46 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Django URLconf file containing all urls
 """
-from django.conf.urls import url
-from django.views.generic import TemplateView
-
 from captcha import views as cviews
-from plinth.modules.sso.views import CaptchaLoginView
+from django.urls import include, re_path
 from stronghold.decorators import public
 
 from . import views
 
+system_urlpatterns = [
+    re_path(r'^sys/#visibility$', views.system_index, name='visibility'),
+    re_path(r'^sys/#data$', views.system_index, name='data'),
+    re_path(r'^sys/#system$', views.system_index, name='system'),
+    re_path(r'^sys/#security$', views.system_index, name='security'),
+    re_path(r'^sys/#administration$', views.system_index,
+            name='administration'),
+]
+
 urlpatterns = [
-    url(r'^$', views.index, name='index'),
-    url(r'^apps/$',
-        TemplateView.as_view(template_name='apps.html'), name='apps'),
-    url(r'^sys/$', views.system_index, name='system'),
+    re_path(r'^$', views.index, name='index'),
+    re_path(r'^language-selection/$',
+            public(views.LanguageSelectionView.as_view()),
+            name='language-selection'),
+    re_path(r'^apps/$', views.AppsIndexView.as_view(), name='apps'),
+    re_path(r'^sys/$', views.system_index, name='system'),
+    re_path(r'', include((system_urlpatterns, 'system'))),
+    re_path(r'^uninstall/(?P<app_id>[1-9a-z\-_]+)/$',
+            views.UninstallView.as_view(), name='uninstall'),
+    re_path(r'^rerun-setup/(?P<app_id>[1-9a-z\-_]+)/$', views.rerun_setup_view,
+            name='rerun-setup'),
 
     # captcha urls are public
-    url(r'^captcha/image/(?P<key>\w+)/$',
-        public(cviews.captcha_image), name='captcha-image',
-        kwargs={'scale': 1}),
-    url(r'^captcha/image/(?P<key>\w+)@2/$',
-        public(cviews.captcha_image), name='captcha-image-2x',
-        kwargs={'scale': 2}),
-    url(r'^captcha/audio/(?P<key>\w+)/$',
-        public(cviews.captcha_audio), name='captcha-audio'),
-    url(r'^captcha/refresh/$',
-        public(cviews.captcha_refresh), name='captcha-refresh'),
+    re_path(r'^captcha/image/(?P<key>\w+)/$', public(cviews.captcha_image),
+            name='captcha-image', kwargs={'scale': 1}),
+    re_path(r'^captcha/image/(?P<key>\w+)@2/$', public(cviews.captcha_image),
+            name='captcha-image-2x', kwargs={'scale': 2}),
+    re_path(r'^captcha/audio/(?P<key>\w+)/$', public(cviews.captcha_audio),
+            name='captcha-audio'),
+    re_path(r'^captcha/refresh/$', public(cviews.captcha_refresh),
+            name='captcha-refresh'),
 
-    # locked url from django-axes
-    url(r'locked/$', public(CaptchaLoginView.as_view()), name='locked_out'),
+    # Notifications
+    re_path(r'^notification/(?P<id>[A-Za-z0-9-=]+)/dismiss/$',
+            views.notification_dismiss, name='notification_dismiss')
 ]

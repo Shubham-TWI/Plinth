@@ -1,22 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.4//EN" "http://www.docbook.org/xml/4.4/docbookx.dtd">
 <!--
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 -->
 <refentry>
   <refmeta>
@@ -38,7 +23,7 @@
       <command>plinth</command>
       <arg><option>-h, </option><option>--help</option></arg>
       <arg><option>--server_dir</option><arg choice="req">SERVER_DIR</arg></arg>
-      <arg><option>--debug</option></arg>
+      <arg><option>--develop</option></arg>
       <arg><option>--diagnose</option></arg>
       <arg>
         <option>--setup</option>
@@ -86,29 +71,23 @@
         <term><option>--server_dir SERVER_DIR</option></term>
         <listitem>
           <para>
-            This the URL fragment under which Plinth will provide its
-            services.  By default the value from
-            <filename>plinth.config</filename> is used.  Plinth is
-            shipped with a value of <filename>/plinth</filename> in
-            <filename>/etc/plinth/plinth.config</filename>.  This
-            means that Plinth will be available as
-            http://localhost:8000/plinth by default.  When
-            <filename>/etc/plinth/plinth.config</filename> is not
-            available, <filename>plinth.config</filename> from current
-            directory is used.  In source directory, this has the
-            default value of <filename>/</filename>.
+            This the URL fragment under which Plinth will provide its services.
+            Plinth is shipped with a default value of
+            <filename>/plinth</filename>. This means that Plinth will be
+            available as http://localhost:8000/plinth by default.
           </para>
         </listitem>
       </varlistentry>
       <varlistentry>
-        <term><option>--debug</option></term>
+        <term><option>--develop</option></term>
         <listitem>
           <para>
-            Enable debug mode.  Turn off Django security features.
-            Print extra debug messages.  Monitor source files for
-            changes and restart Plinth on modifications.  Turn on
-            Django debug mode to show details on error pages.  Die if
-            there is an error during module initialization.
+            Enable development mode.  Use develop.config and action scripts
+            from the current working directory.  Enables extra debug messages,
+            enable Django debug mode for detailed error pages and turn off
+            Django security features.  Monitor source files for changes and
+            restart Plinth on modifications.  Die if there is an error during
+            module initialization.
           </para>
         </listitem>
       </varlistentry>
@@ -179,12 +158,15 @@
   <refsect1>
     <title>Configuration</title>
     <para>
-      Plinth reads various configuraiton options from the file
-      <filename>/etc/plinth/plinth.config</filename>.  If this file is
-      not present, then it reads configuration file
-      <filename>./plinth.config</filename> from the current directory.
-      This is mainly meant to make Plinth work with configuration from
-      source code directory for debugging purposes.
+      Plinth reads various configuration options from the files
+      <filename>/usr/share/freedombox/freedombox.config</filename>,
+      <filename>/usr/share/freedombox/freedombox.config.d/*.config</filename>,
+      <filename>/etc/plinth/plinth.config</filename>,
+      <filename>/etc/plinth/plinth.config.d/*.config</filename>,
+      <filename>/etc/freedombox/freedombox.config</filename> and
+      <filename>/etc/freedombox/freedombox.config.d/*.config</filename> in that
+      order. Options in a file read later override options specified earlier.
+      <filename>/etc/plinth/</filename> locations are deprecated.
     </para>
   </refsect1>
 
@@ -200,12 +182,21 @@
     </example>
 
     <example>
-      <title>Run Plinth for debugging</title>
-      <synopsis>$ plinth --server_dir=/plinth --debug</synopsis>
+      <title>Run Plinth with different URL prefix</title>
+      <synopsis>$ plinth --server_dir='/myurl'</synopsis>
       <para>
-        Enable debug mode and run on terminal.  Also override the
-        configuration file value for the URL fragment to start Plinth
-        under and set it to /plinth.
+        Run Plinth with the '/myurl' prefix. Note that Apache forwards requests
+        to '/plinth' by default, so /myurl is not accessible outside of your
+        FreedomBox without adapting the apache configuration.
+      </para>
+    </example>
+
+    <example>
+      <title>Run Plinth in development mode</title>
+      <synopsis>$ plinth --develop</synopsis>
+      <para>
+        Run in development mode on the terminal.  Enable auto-reloading and
+        more extensive debugging.
       </para>
     </example>
   </refsect1>
@@ -214,8 +205,8 @@
     <title>Bugs</title>
     <para>
       See <ulink
-      url="https://github.com/freedombox/Plinth/issues">Plinth issue
-      tracker</ulink> for a full list of known issues and TODO items.
+      url="https://salsa.debian.org/freedombox-team/freedombox/issues">Plinth
+      issue tracker</ulink> for a full list of known issues and TODO items.
     </para>
   </refsect1>
 

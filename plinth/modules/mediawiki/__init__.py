@@ -1,125 +1,174 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Plinth module to configure MediaWiki.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure MediaWiki."""
 
-from django.utils.translation import ugettext_lazy as _
+import pathlib
+from urllib.parse import urlparse
 
-from plinth import service as service_module
-from plinth import action_utils, actions, frontpage
-from plinth.menu import main_menu
+from django.utils.translation import gettext_lazy as _
 
-from .manifest import clients
+from plinth import app as app_module
+from plinth import frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.package import Packages
 
-version = 1
+from . import manifest, privileged
 
-managed_packages = ['mediawiki', 'imagemagick', 'php-sqlite3']
-
-name = _('MediaWiki')
-
-short_description = _('Wiki')
-
-description = [
+_description = [
     _('MediaWiki is the wiki engine that powers Wikipedia and other WikiMedia '
       'projects. A wiki engine is a program for creating a collaboratively '
       'edited website. You can use MediaWiki to host a wiki-like website, '
       'take notes or collaborate with friends on projects.'),
     _('This MediaWiki instance comes with a randomly generated administrator '
-      'password. You can set a new password in the Configuration section and '
-      'login using the "admin" account. You can then create more user '
+      'password. You can set a new password in the "Configuration" section '
+      'and log in using the "admin" account. You can then create more user '
       'accounts from MediaWiki itself by going to the <a '
       'href="/mediawiki/index.php/Special:CreateAccount">'
-      'Special:CreateAccount</a> page'),
-    _('Anyone with a link to this Wiki can read it. Only users that are '
+      'Special:CreateAccount</a> page.'),
+    _('Anyone with a link to this wiki can read it. Only users that are '
       'logged in can make changes to the content.')
 ]
 
-service = None
-
-clients = clients
+USER_CONFIG_FILE = '/etc/mediawiki/FreedomBoxSettings.php'
 
 
-def init():
-    """Intialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-edit', 'mediawiki:index',
-                     short_description)
+class MediaWikiApp(app_module.App):
+    """FreedomBox app for MediaWiki."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            'mediawiki', name, ports=['http', 'https'], is_external=True,
-            is_enabled=is_enabled, enable=enable, disable=disable)
+    app_id = 'mediawiki'
 
-        if is_enabled():
-            add_shortcut()
+    _version = 12
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+        self._private_mode = True
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('MediaWiki'), icon_filename='mediawiki',
+                               short_description=_('Wiki'),
+                               description=_description,
+                               manual_page='MediaWiki',
+                               clients=manifest.clients)
+        self.add(info)
+
+        menu_item = menu.Menu('menu-mediawiki', info.name,
+                              info.short_description, info.icon_filename,
+                              'mediawiki:index', parent_url_name='apps')
+        self.add(menu_item)
+
+        shortcut = Shortcut('shortcut-mediawiki', info.name,
+                            short_description=info.short_description,
+                            icon=info.icon_filename, url='/mediawiki',
+                            clients=info.clients, login_required=True)
+        self.add(shortcut)
+
+        packages = Packages('packages-mediawiki',
+                            ['mediawiki', 'imagemagick', 'php-sqlite3'])
+        self.add(packages)
+
+        dropin_configs = DropinConfigs('dropin-configs-mediawiki', [
+            '/etc/apache2/conf-available/mediawiki-freedombox.conf',
+            '/etc/mediawiki/FreedomBoxStaticSettings.php',
+        ])
+        self.add(dropin_configs)
+
+        firewall = Firewall('firewall-mediawiki', info.name,
+                            ports=['http', 'https'], is_external=True)
+        self.add(firewall)
+
+        webserver = Webserver('webserver-mediawiki', 'mediawiki',
+                              urls=['https://{host}/mediawiki/'],
+                              expect_redirects=True)
+        self.add(webserver)
+
+        webserver = Webserver('webserver-mediawiki-freedombox',
+                              'mediawiki-freedombox')
+        self.add(webserver)
+
+        daemon = Daemon('daemon-mediawiki', 'mediawiki-jobrunner')
+        self.add(daemon)
+
+        backup_restore = BackupRestore('backup-restore-mediawiki',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup()
+        privileged.update()
+        if not old_version:
+            self.enable()
+
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()
 
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('setup', actions.superuser_run, 'mediawiki', ['setup'])
-    helper.call('enable', actions.superuser_run, 'mediawiki', ['enable'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            'mediawiki',
-            name,
-            is_external=True,
-            is_enabled=is_enabled,
-            enable=enable,
-            disable=disable,
-            ports=['http', 'https'], )
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+class Shortcut(frontpage.Shortcut):
+    """Frontpage shortcut for only logged users when in private mode."""
+
+    def enable(self):
+        """When enabled, check if MediaWiki is in private mode."""
+        super().enable()
+        self.login_required = get_config()['enable_private_mode']
 
 
-def add_shortcut():
-    """Helper method to add a shortcut to the frontpage."""
-    frontpage.add_shortcut('mediawiki', name,
-                           short_description=short_description,
-                           url='/mediawiki', login_required=True)
+def _get_config_value_in_file(setting_name, config_file):
+    """Return the value of a setting from a config file."""
+    with open(config_file, 'r', encoding='utf-8') as config:
+        for line in config:
+            if line.startswith(setting_name):
+                return line.partition('=')[2].strip('\n ;\'"')
+
+        return None
 
 
-def is_enabled():
-    """Return whether the module is enabled."""
-    return action_utils.webserver_is_enabled('mediawiki')
+def _get_static_config_file():
+    """Return the path for the file containing static settings."""
+    base_path = ('/usr/share/freedombox/etc/'
+                 'mediawiki/FreedomBoxStaticSettings.php')
+    for path in [
+            pathlib.Path(base_path),
+            pathlib.Path(__file__).parent / 'data' / base_path.lstrip('/')
+    ]:
+        if path.exists():
+            return path
+
+    raise RuntimeError('Unable to find static config file')
 
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('mediawiki', ['enable'])
-    add_shortcut()
+def _get_config_value(setting_name):
+    """Return a configuration value from multiple configuration files."""
+    return _get_config_value_in_file(setting_name, USER_CONFIG_FILE) or \
+        _get_config_value_in_file(setting_name, _get_static_config_file())
 
 
-def disable():
-    """Enable the module."""
-    actions.superuser_run('mediawiki', ['disable'])
-    frontpage.remove_shortcut('mediawiki')
+def get_config():
+    """Return all the configuration settings."""
+    server_url = _get_config_value('$wgServer')
+    create_permission = _get_config_value(
+        "$wgGroupPermissions['*']['createaccount']")
+    read_permission = _get_config_value("$wgGroupPermissions['*']['read']")
+    return {
+        'default_skin': _get_config_value('$wgDefaultSkin'),
+        'domain': urlparse(server_url).netloc,
+        'site_name': _get_config_value('$wgSitename') or 'Wiki',
+        'default_lang': _get_config_value('$wgLanguageCode') or None,
+        'enable_public_registrations': 'true' in create_permission,
+        'enable_private_mode': 'false' in read_permission,
+    }
 
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+def set_server_url(domain):
+    """Set the value of $wgServer."""
+    protocol = 'https'
+    if domain.endswith('.onion'):
+        protocol = 'http'
 
-    results.extend(
-        action_utils.diagnose_url_on_all('https://{host}/mediawiki',
-                                         check_certificate=False))
-
-    return results
+    privileged.set_server_url(f'{protocol}://{domain}')

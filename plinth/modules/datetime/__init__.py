@@ -1,87 +1,124 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module to configure system date and time
+FreedomBox app to configure system date and time.
 """
 
-from django.utils.translation import ugettext_lazy as _
 import subprocess
 
-from plinth import service as service_module
-from plinth.menu import main_menu
+from django.utils.translation import gettext_lazy as _
+from django.utils.translation import gettext_noop
 
+from plinth import app as app_module
+from plinth import menu
+from plinth.daemon import Daemon, RelatedDaemon
+from plinth.diagnostic_check import DiagnosticCheck, Result
+from plinth.modules.backups.components import BackupRestore
+from plinth.package import Packages
 
-version = 1
+from . import manifest
 
-is_essential = True
-
-managed_services = ['ntp']
-
-managed_packages = ['ntp']
-
-name = _('Date & Time')
-
-description = [
+_description = [
     _('Network time server is a program that maintains the system time '
       'in synchronization with servers on the Internet.')
 ]
 
-service = None
+
+class DateTimeApp(app_module.App):
+    """FreedomBox app for date and time if time syncronization is unmanaged."""
+
+    app_id = 'datetime'
+
+    _version = 2
+
+    _time_managed = None
+
+    @property
+    def can_be_disabled(self):
+        """Return whether the app can be disabled."""
+        return self._is_time_managed()
+
+    def _is_time_managed(self):
+        """Check whether time should be syncronized by the systemd-timesyncd.
+
+        systemd-timesyncd does not run if we have another NTP daemon installed
+        or FreedomBox runs inside a container where the host manages the time.
+
+        """
+        if self._time_managed is None:
+            try:
+                # Replace with the command 'systemd-analyze condition
+                # --unit=systemd-timesyncd.service' when --unit argument
+                # becomes available in a newer systemd.
+                process = subprocess.run(
+                    ['systemd-detect-virt', '--container'], check=False,
+                    stdout=subprocess.PIPE)
+                self._time_managed = (
+                    process.stdout.decode().strip() == 'none')
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                # When systemd-timesyncd will not run.
+                self._time_managed = False
+
+        return self._time_managed
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True, name=_('Date & Time'),
+                               icon='fa-clock-o', description=_description,
+                               manual_page='DateTime')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-datetime', info.name, None, info.icon,
+                              'datetime:index',
+                              parent_url_name='system:system', order=40)
+        self.add(menu_item)
+
+        packages = Packages('packages-datetime', ['systemd-timesyncd'])
+        self.add(packages)
+
+        related_daemon = RelatedDaemon('daemon-datetime-timedated',
+                                       'systemd-timedated')
+        self.add(related_daemon)
+
+        if self._is_time_managed():
+            daemon = Daemon('daemon-datetime', 'systemd-timesyncd')
+            self.add(daemon)
+
+        backup_restore = BackupRestore('backup-restore-datetime',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    def diagnose(self) -> list[DiagnosticCheck]:
+        """Run diagnostics and return the results."""
+        results = super().diagnose()
+        if self._is_time_managed():
+            results.append(_diagnose_time_synchronized())
+
+        return results
+
+    def has_diagnostics(self):
+        """Return that app has diagnostics only when time is managed."""
+        return self._is_time_managed()
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        self.enable()
 
 
-def init():
-    """Intialize the date/time module."""
-    menu = main_menu.get('system')
-    menu.add_urlname(name, 'glyphicon-time', 'datetime:index')
-
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0], name, ports=['ntp'], is_external=False)
-
-
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0], name, ports=['ntp'], is_external=False)
-    helper.call('post', service.notify_enabled, None, True)
-
-
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
-    results.append(_diagnose_ntp_server_count())
-
-    return results
-
-
-def _diagnose_ntp_server_count():
-    """Diagnose minimum NTP server count."""
-    result = 'failed'
+def _diagnose_time_synchronized() -> DiagnosticCheck:
+    """Check whether time is synchronized to NTP server."""
+    result = Result.FAILED
     try:
-        output = subprocess.check_output(['ntpq', '-n', '-c', 'lpeers'])
-        if len(output.decode().splitlines()[2:]):
-            result = 'passed'
+        output = subprocess.check_output(
+            ['timedatectl', 'show', '--property=NTPSynchronized', '--value'])
+        if 'yes' in output.decode():
+            result = Result.PASSED
     except subprocess.CalledProcessError:
         pass
 
-    return [_('NTP client in contact with servers'), result]
+    return DiagnosticCheck('datetime-ntp-sync',
+                           gettext_noop('Time synchronized to NTP server'),
+                           result)

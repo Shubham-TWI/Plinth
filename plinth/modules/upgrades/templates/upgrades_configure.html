@@ -1,35 +1,153 @@
-{% extends "simple_service.html" %}
+{% extends "app.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load bootstrap %}
 {% load i18n %}
+{% load static %}
 
-{% block configuration %}
+{% block status %}
+  {{ block.super}}  {% comment %} To extend instead of overwrite {% endcomment %}
 
-  <form class="form" method="post">
-    {% csrf_token %}
+  <h3>{% trans "Status" %}</h3>
+  <div class="upgrades-status-frame clearfix">
+    <div class="upgrade-status-icon pull-left">
+      {% if is_busy %}
+        <span class="fa fa-refresh fa-spin fa-3x fa-pull-left processing"></span>
+      {% elif new_version %}
+        <span class="fa fa-frown-o fa-3x fa-pull-left warning"></span>
+      {% else %}
+        <span class="fa fa-smile-o fa-3x fa-pull-left normal"></span>
+      {% endif %}
+    </div>
+    <p>
+      {% blocktrans trimmed %}
+        You are running {{ os_release }} and {{ box_name }} version {{ version }}.
+      {% endblocktrans %}
+      {% if is_busy %}
+        <strong>{% trans "Updating..." %}</strong>
+      {% elif new_version %}
+        {% blocktrans trimmed %}
+          There is a new {{ box_name }} version available.
+        {% endblocktrans %}
+        <strong>{% trans "Your Freedombox needs an update!" %}</strong>
+      {% else %}
+        {% blocktrans %}{{ box_name }} is up to date.{% endblocktrans %}
+      {% endif %}
+    </p>
+  </div>
+{% endblock %}
 
-    {{ form|bootstrap }}
+{% block extra_content %}
+  <h3>{% trans "Frequent Feature Updates" %}</h3>
+  <p>
+    {% if can_activate_backports and not is_backports_requested %}
+      {% blocktrans trimmed %}
+        Frequent feature updates can be activated. Activating them is
+        recommended.
+      {% endblocktrans %}
+    {% elif can_activate_backports and is_backports_requested %}
+      {% blocktrans trimmed %}
+        Frequent feature updates are activated.
+      {% endblocktrans %}
+    {% else %}
+      {% blocktrans trimmed %}
+        Frequent feature updates cannot be activated. They may not be necessary
+        on your distribution.
+      {% endblocktrans %}
+    {% endif %}
+  </p>
+  <p>
+    {% if can_activate_backports %}
+      {% blocktrans trimmed %}
+        Frequent feature updates allow the {{box_name}} Service, plus a very
+        limited set of software, to receive new features more frequently (from
+        the backports repository). This results in receiving some new features
+        within weeks, instead of only once every 2 years or so. Note that
+        software with frequent feature updates does not have support from the
+        Debian Security Team. Instead, they are maintained by contributors to
+        Debian and the {{box_name}} community.
+      {% endblocktrans %}
+    {% endif %}
+  </p>
+  {% if can_activate_backports and not is_backports_requested %}
+    <div class="alert alert-warning" role="alert">
+      {% url 'snapshot:index' as snapshot_url %}
+      {% blocktrans trimmed %}
+        <strong>Warning!</strong> Once frequent feature updates are activated,
+        they cannot be deactivated. You may wish to take a snapshot using
+        <a href="{{ snapshot_url }}">Storage Snapshots</a> before continuing.
+      {% endblocktrans %}
+    </div>
+    <p>
+      <form class="form" method="post"
+            action="{% url 'upgrades:activate-backports' %}">
+        {% csrf_token %}
+        <input type="submit" class="btn btn-primary"
+               value="{% trans 'Activate frequent feature updates (recommended)' %}"/>
+      </form>
+    </p>
+  {% endif %}
 
-    <input type="submit" class="btn btn-primary btn-md"
-           value="{% trans "Update setup" %}"/>
-  </form>
+  <h3>{% trans "Manual Update" %}</h3>
+  {% if is_busy %}
+    <div class="btn-toolbar">
+      <button type="button" disabled="disabled"
+              class="running-status-parent btn btn-default" >
+        <span class="running-status loading"></span>
+        {% trans "Updating..." %}
+      </button>
+    </div>
+  {% else %}
+    <div class="btn-toolbar">
+      <form class="form" method="post" action="{% url 'upgrades:upgrade' %}">
+        {% csrf_token %}
+        <input type="submit" class="btn btn-default"
+               value="{% trans "Update now" %}"/>
+      </form>
+    </div>
+  {% endif %}
 
+  <p>
+    {% blocktrans trimmed %}
+      <strong>This may take a long time to complete.</strong> During an update,
+      you cannot install apps. Also, this web interface may be temporarily
+      unavailable and show an error. In that case, refresh the page to
+      continue.
+    {% endblocktrans %}
+  </p>
+
+  {% if log %}
+    <p>
+      <a class="btn btn-default collapsed collapsible-button" role="button"
+         data-toggle="collapse" href="#collapse-log" aria-expanded="false"
+         aria-controls="collapse-log">
+        <span class="fa fa-chevron-right fa-fw" aria-hidden="true"></span>
+        {% trans "Show recent update logs" %}
+      </a>
+
+      <div class="collapse" id="collapse-log">
+        <pre>{{ log }}</pre>
+      </div>
+    </p>
+  {% endif %}
+
+  {% if can_test_dist_upgrade %}
+    <h3>{% trans "Test Distribution Upgrade" %}</h3>
+    <p>
+      {% blocktrans trimmed %}
+        This will attempt to upgrade the system from stable to
+        testing. <strong>It is meant only for development use.</strong>
+      {% endblocktrans %}
+    </p>
+    <div class="btn-toolbar">
+      <form class="form" method="post"
+            action="{% url 'upgrades:test-dist-upgrade' %}">
+        {% csrf_token %}
+        <input type="submit" class="btn btn-danger"
+               value="{% trans "Test distribution upgrade now" %}"/>
+      </form>
+    </div>
+  {% endif %}
 {% endblock %}

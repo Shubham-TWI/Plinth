@@ -1,44 +1,44 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 Common Django middleware.
 """
+
+import logging
 
 from django import urls
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied
+from django.db.utils import OperationalError
 from django.shortcuts import render
-from django.utils.translation import ugettext_lazy as _
-import logging
-
+from django.template.response import SimpleTemplateResponse
+from django.utils.deprecation import MiddlewareMixin
+from django.utils.translation import gettext as _
 from stronghold.utils import is_view_func_public
 
-import plinth
+from plinth import app as app_module
 from plinth import setup
-from plinth.package import PackageException
 from plinth.utils import is_user_admin
+
+from . import operation as operation_module
 from . import views
 
 logger = logging.getLogger(__name__)
 
 
-class SetupMiddleware(object):
+def _collect_operations_results(request, app):
+    """Show success/fail messages from previous operations."""
+    operations = operation_module.manager.collect_results(app.app_id)
+    for operation in operations:
+        if operation.exception:
+            views.messages_error(request, operation.message,
+                                 operation.exception)
+        else:
+            messages.success(request, operation.message)
+
+
+class SetupMiddleware(MiddlewareMixin):
     """Django middleware to show pre-setup message and setup progress."""
 
     @staticmethod
@@ -61,39 +61,35 @@ class SetupMiddleware(object):
             # Requested URL does not belong to any application
             return
 
-        module_name = resolver_match.namespaces[0]
-        module = plinth.module_loader.loaded_modules[module_name]
+        app_id = resolver_match.namespaces[0]
+        app = app_module.App.get(app_id)
 
-        # Collect errors from any previous operations and show them
-        if module.setup_helper.is_finished:
-            exception = module.setup_helper.collect_result()
-            if not exception:
-                messages.success(request, _('Application installed.'))
-            else:
-                if isinstance(exception, PackageException):
-                    error_string = getattr(exception, 'error_string',
-                                           str(exception))
-                    error_details = getattr(exception, 'error_details', '')
-                    message = _('Error installing application: {string} '
-                                '{details}').format(
-                                    string=error_string, details=error_details)
-                else:
-                    message = _('Error installing application: {error}') \
-                        .format(error=exception)
-
-                messages.error(request, message)
+        is_admin = is_user_admin(request)
+        # Collect and show operations' results to admins
+        if is_admin:
+            _collect_operations_results(request, app)
 
         # Check if application is up-to-date
-        if module.setup_helper.get_state() == 'up-to-date':
+        if app.get_setup_state() == \
+           app_module.App.SetupState.UP_TO_DATE:
             return
+
+        if not is_admin:
+            raise PermissionDenied
 
         # Only allow logged-in users to access any setup page
         view = login_required(views.SetupView.as_view())
-        return view(request, setup_helper=module.setup_helper)
+        return view(request, app_id=app_id)
 
 
-class AdminRequiredMiddleware(object):
+class AdminRequiredMiddleware(MiddlewareMixin):
     """Django middleware for authenticating requests for admin areas."""
+
+    @staticmethod
+    def check_user_group(view_func, request):
+        if hasattr(view_func, 'GROUP_NAME'):
+            return request.user.groups.filter(
+                name=getattr(view_func, 'GROUP_NAME')).exists()
 
     @staticmethod
     def process_view(request, view_func, view_args, view_kwargs):
@@ -103,10 +99,12 @@ class AdminRequiredMiddleware(object):
             return
 
         if not is_user_admin(request):
-            raise PermissionDenied
+            if not AdminRequiredMiddleware.check_user_group(
+                    view_func, request):
+                raise PermissionDenied
 
 
-class FirstSetupMiddleware(object):
+class FirstSetupMiddleware(MiddlewareMixin):
     """Django middleware to block all interactions before first setup."""
 
     @staticmethod
@@ -115,5 +113,24 @@ class FirstSetupMiddleware(object):
         if not setup.is_first_setup_running:
             return
 
-        context = {'is_first_setup_running': setup.is_first_setup_running}
+        context = {
+            'is_first_setup_running': setup.is_first_setup_running,
+            'refresh_page_sec': 3
+        }
         return render(request, 'first_setup.html', context)
+
+
+class CommonErrorMiddleware(MiddlewareMixin):
+    """Django middleware to handle common errors."""
+
+    @staticmethod
+    def process_exception(request, exception):
+        """Show a custom error page when OperationalError is raised."""
+        if isinstance(exception, OperationalError):
+            message = _(
+                'System is possibly under heavy load. Please retry later.')
+            return SimpleTemplateResponse('error.html',
+                                          context={'message': message},
+                                          status=503)
+
+        return None

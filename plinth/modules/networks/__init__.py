@@ -1,74 +1,129 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to interface with network-manager."""
 
-"""
-Plinth module to interface with network-manager
-"""
-
-from django.utils.translation import ugettext_lazy as _
-from logging import Logger
 import subprocess
+from logging import Logger
 
-from plinth import actions
-from plinth import action_utils
-from plinth import network
-from plinth.menu import main_menu
+from django.utils.translation import gettext_lazy as _
 
+from plinth import app as app_module
+from plinth import daemon, kvstore, menu, network
+from plinth.config import DropinConfigs
+from plinth.diagnostic_check import DiagnosticCheck
+from plinth.package import Packages
 
-version = 1
+from . import privileged
 
-is_essential = True
+first_boot_steps = [
+    {
+        'id': 'network_topology_wizard',
+        'url': 'networks:network-topology-first-boot',
+        'order': 2,
+    },
+    {
+        'id': 'router_setup_wizard',
+        'url': 'networks:router-configuration-first-boot',
+        'order': 3,
+    },
+    {
+        'id': 'internet_connectivity_type_wizard',
+        'url': 'networks:internet-connection-type-first-boot',
+        'order': 4,
+    },
+]
 
-managed_packages = ['network-manager', 'batctl']
-
-name = _('Networks')
+_description = [
+    _('Configure network devices. Connect to the Internet via Ethernet, Wi-Fi '
+      'or PPPoE. Share that connection with other devices on the network.'),
+    _('Devices administered through other methods may not be available for '
+      'configuration here.'),
+]
 
 logger = Logger(__name__)
 
 
-def init():
-    """Initialize the Networks module."""
-    menu = main_menu.get('system')
-    menu.add_urlname(name, 'glyphicon-signal', 'networks:index')
+class NetworksApp(app_module.App):
+    """FreedomBox app for Networks."""
+
+    app_id = 'networks'
+
+    _version = 2
+
+    can_be_disabled = False
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True, name=_('Networks'),
+                               icon='fa-signal', description=_description,
+                               manual_page='Networks')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-networks', info.name, None, info.icon,
+                              'networks:index',
+                              parent_url_name='system:system', order=20)
+        self.add(menu_item)
+
+        packages = Packages('packages-networks', ['network-manager', 'batctl'])
+        self.add(packages)
+
+        dropin_configs = DropinConfigs('dropin-configs-networks', [
+            '/etc/NetworkManager/dispatcher.d/10-freedombox-batman',
+        ])
+        self.add(dropin_configs)
+
+    def diagnose(self) -> list[DiagnosticCheck]:
+        """Run diagnostics and return the results."""
+        results = super().diagnose()
+
+        interfaces = _get_shared_interfaces()
+        addresses = _get_interface_addresses(interfaces)
+
+        for address in addresses:
+            results.append(daemon.diagnose_port_listening(53, 'tcp', address))
+            results.append(daemon.diagnose_port_listening(53, 'udp', address))
+
+        return results
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup()
+        self.enable()
 
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    actions.superuser_run('networks')
+def get_network_topology_type():
+    """Return the currently configured network topology type or default."""
+    return kvstore.get_default('networks_topology_type', 'to_router')
 
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+def set_network_topology_type(network_topology_type):
+    """Store the network topology type."""
+    kvstore.set('networks_topology_type', network_topology_type)
 
-    interfaces = _get_shared_interfaces()
-    addresses = _get_interface_addresses(interfaces)
 
-    for address in addresses:
-        results.append(
-            action_utils.diagnose_port_listening(53, 'tcp', address))
-        results.append(
-            action_utils.diagnose_port_listening(53, 'udp', address))
+def get_internet_connection_type():
+    """Return the currently configured internet connection type or default."""
+    return kvstore.get_default('networks_internet_type', 'unknown')
 
-    results.append(_diagnose_dnssec('4'))
-    results.append(_diagnose_dnssec('6'))
 
-    return results
+def set_internet_connection_type(internet_connection_type):
+    """Store the internet connection type."""
+    return kvstore.set('networks_internet_type', internet_connection_type)
+
+
+def get_router_configuration_type():
+    """Return the currently configured router configuration type or default."""
+    return kvstore.get_default('networks_router_configuration_type',
+                               'not_configured')
+
+
+def set_router_configuration_type(router_configuration_type):
+    """Store the router configuration type."""
+    return kvstore.set('networks_router_configuration_type',
+                       router_configuration_type)
 
 
 def _get_shared_interfaces():
@@ -103,24 +158,3 @@ def _get_interface_addresses(interfaces):
             addresses.append(parts[3].split('/')[0])
 
     return addresses
-
-
-def _diagnose_dnssec(kind='4'):
-    """Perform diagnostic on whether the system is using DNSSEC.
-
-    Kind is either '4' or '6' for IPv4 and IPv6 respectively.
-    """
-    kind_option = {'4': '-4', '6': '-6'}[kind]
-
-    result = 'failed'
-    try:
-        output = subprocess.check_output(
-            ['dig', kind_option, '+time=2', '+tries=1',
-             'test.dnssec-or-not.net', 'TXT'])
-
-        if 'Yes, you are using DNSSEC' in output.decode():
-            result = 'passed'
-    except subprocess.CalledProcessError:
-        pass
-
-    return [_('Using DNSSEC on IPv{kind}').format(kind=kind), result]

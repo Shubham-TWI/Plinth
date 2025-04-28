@@ -1,0 +1,21 @@
+{% comment %}
+# SPDX-License-Identifier: AGPL-3.0-or-later
+{% endcomment %}
+
+{# Template to display a drop down button for notifications in the navbar #}
+
+{% load i18n %}
+
+{% if notifications %}
+  <li class="nav-item dropdown notifications-dropdown">
+    <a href="#" title="{% trans "Notifications" %}"
+       class="nav-link dropdown-toggle" data-toggle="dropdown"
+       role="button" aria-expanded="false" aria-haspopup="true"
+       data-target=".notifications">
+      <span class="fa fa-bell nav-icon"></span>
+      <span class="badge badge-pill badge-{{ notifications_max_severity }}">
+        {{ notifications|length }}
+      </span>
+    </a>
+  </li>
+{% endif %}

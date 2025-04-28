@@ -1,49 +1,22 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module for infinoted.
+FreedomBox app for infinoted.
 """
 
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.daemon import Daemon
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.package import Packages
 from plinth.utils import format_lazy
-from plinth.views import ServiceView
-from .manifest import clients
 
-version = 1
+from . import manifest, privileged
 
-service = None
-
-managed_services = ['infinoted']
-
-managed_packages = ['infinoted']
-
-name = _('infinoted')
-
-short_description = _('Gobby Server')
-
-description = [
+_description = [
     _('infinoted is a server for Gobby, a collaborative text editor.'),
     format_lazy(
         _('To use it, <a href="https://gobby.github.io/">download Gobby</a>, '
@@ -52,83 +25,62 @@ description = [
         box_name=_(cfg.box_name)),
 ]
 
-clients = clients
 
+class InfinotedApp(app_module.App):
+    """FreedomBox app for infinoted."""
 
-def init():
-    """Initialize the infinoted module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-pencil', 'infinoted:index',
-                     short_description)
+    app_id = 'infinoted'
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0],
-            name,
-            ports=['infinoted-plinth'],
-            is_external=True,
-            enable=enable,
-            disable=disable)
+    _version = 3
 
-        if service.is_enabled():
-            add_shortcut()
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('infinoted'), icon_filename='infinoted',
+                               short_description=_('Gobby Server'),
+                               description=_description,
+                               manual_page='Infinoted',
+                               clients=manifest.clients)
+        self.add(info)
 
-class InfinotedServiceView(ServiceView):
-    service_id = managed_services[0]
-    diagnostics_module_name = "infinoted"
-    description = description
-    clients = clients
+        menu_item = menu.Menu('menu-infinoted', info.name,
+                              info.short_description, info.icon_filename,
+                              'infinoted:index', parent_url_name='apps')
+        self.add(menu_item)
 
+        shortcut = frontpage.Shortcut(
+            'shortcut-infinoted', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            description=info.description, manual_page=info.manual_page,
+            configure_url=reverse_lazy('infinoted:index'),
+            clients=info.clients, login_required=False)
+        self.add(shortcut)
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'infinoted', ['setup'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0],
-            name,
-            ports=['infinoted-plinth'],
-            is_external=True,
-            enable=enable,
-            disable=disable)
+        packages = Packages('packages-infinoted', ['infinoted'])
+        self.add(packages)
 
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+        firewall = Firewall('firewall-infinoted', info.name,
+                            ports=['infinoted-plinth'], is_external=True)
+        self.add(firewall)
 
+        daemon = Daemon('daemon-infinoted', 'infinoted',
+                        listen_ports=[(6523, 'tcp4'), (6523, 'tcp6')])
+        self.add(daemon)
 
-def add_shortcut():
-    frontpage.add_shortcut(
-        'infinoted',
-        name,
-        short_description=short_description,
-        url=None,
-        details=description,
-        configure_url=reverse_lazy('infinoted:index'),
-        login_required=False)
+        backup_restore = BackupRestore('backup-restore-infinoted',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup()
+        if not old_version:
+            self.enable()
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('service', ['enable', managed_services[0]])
-    add_shortcut()
-
-
-def disable():
-    """Disable the module."""
-    actions.superuser_run('service', ['disable', managed_services[0]])
-    frontpage.remove_shortcut('infinoted')
-
-
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
-
-    results.append(action_utils.diagnose_port_listening(6523, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(6523, 'tcp6'))
-
-    return results
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()

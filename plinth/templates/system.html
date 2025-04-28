@@ -1,47 +1,35 @@
-{% extends 'base.html' %}
+{% extends 'cards.html' %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
+{% load static %}
 {% load i18n %}
 
-{% block submenu %}
-  {% if submenu %}
-    <div class="sidebar">
-      {% include "submenu.html" with menu=submenu %}
+{% block body_class %}system-page{% endblock %}
+
+{% block container %}
+  <div class="container">
+    <div class="row">
+      <div class="col-lg-8 offset-lg-2">
+        {% include 'messages.html' %}
+      </div>
     </div>
-  {% endif %}
-{% endblock %}
+  </div>
 
-{% block content %}
+  <div class="container card-container">
+    {% for section_item in submenu.sorted_items %}
+      <div class="system-section-title">{{ section_item.name }}</div>
+      <div class="row">
+        <div class="card-list card-list-primary">
+          {% for item in section_item.sorted_items %}
+            {% if advanced_mode or not item.advanced %}
+              {% include "card.html" %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+  </div>
 
-  <h2>{% trans "System Configuration" %}</h2>
-
-  <p>
-    {% blocktrans trimmed %}
-      Here you can administrate the underlying system of your {{ box_name }}.
-    {% endblocktrans %}
-  </p>
-
-  <p>
-    {% blocktrans trimmed %}
-      The options affect the {{ box_name }} at its most general level,
-      so be careful!
-    {% endblocktrans %}
-  </p>
 {% endblock %}

@@ -1,173 +1,43 @@
-{% extends "simple_service.html" %}
+{% extends "app.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load bootstrap %}
 {% load i18n %}
+{% load static %}
 
-{% block page_head %}
+{% block status %}
+  {{ block.super }}
 
-  {% if config_running %}
-    <meta http-equiv="refresh" content="3" />
+  {% if status.hs_enabled %}
+    <div class="table-responsive">
+      <table class="table tor-hs">
+        <thead>
+          <tr>
+            <th>{% trans "Onion Service" %}</th>
+            <th>{% trans "Status" %}</th>
+            <th>{% trans "Ports" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="tor-hs-hostname">{{ status.hs_hostname }}</td>
+            <td class="tor-hs-status">{{ status.hs_status }}</td>
+            <td class="tor-hs-services">
+              {{ status.hs_services|join:', ' }}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   {% endif %}
-
 {% endblock %}
 
-
-{% block configuration %}
-
-  {% include "clients.html" with clients=clients %}
-
-  <h3>{% trans "Status" %}</h3>
-
-  {% if config_running %}
-
-    <p class="running-status-parent">
-      <span class="running-status loading"></span>
-      {% trans "Tor configuration is being updated" %}
-    </p>
-
-  {% else %}
-
-    <p class="running-status-parent">
-      {% if status.is_running %}
-        <span class="running-status active"></span>
-        {% trans "Tor is running" %}
-      {% else %}
-        <span class="running-status inactive"></span>
-        {% trans "Tor is not running" %}
-      {% endif %}
-    </p>
-
-    {% include "diagnostics_button.html" with module="tor" enabled=status.is_running %}
-
-    {% if status.hs_enabled %}
-      <div class="row">
-        <div class="col-sm-6">
-          <table class="table table-bordered table-condensed table-striped">
-            <thead>
-              <tr>
-                <th>{% trans "Hidden Service" %}</th>
-                <th>{% trans "Status" %}</th>
-                <th>{% trans "Ports" %}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>{{ status.hs_hostname }}</td>
-                <td>{{ status.hs_status }}</td>
-                <td>
-                  {% for service in status.hs_services %}
-                    {{ service }}
-                  {% endfor %}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    {% endif %}
-
-    <h3>{% trans "Configuration" %}</h3>
-
-    <form class="form" method="post">
-      {% csrf_token %}
-
-      {{ form|bootstrap }}
-
-      <input type="submit" class="btn btn-primary btn-md"
-             value="{% trans "Update setup" %}"/>
-    </form>
-
-    {% if status.relay_enabled %}
-      <h3>{% trans "Relay" %}</h3>
-      <p>
-        {% blocktrans trimmed %}
-          If your {{ box_name }} is behind a router or firewall, you should
-          make sure the following ports are open, and port-forwarded, if
-          necessary:
-        {% endblocktrans %}
-      </p>
-      <div class="row">
-        <div class="col-sm-3">
-          <table class="table table-bordered table-condensed table-striped">
-            <thead>
-              <tr>
-                <th>{% trans "Service" %}</th>
-                <th>{% trans "Port" %}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for name, port in status.ports.items %}
-                <tr>
-                  <td>{{ name }}</td>
-                  <td>{{ port }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    {% endif %}
-
-    <h3>{% trans "SOCKS" %}</h3>
-
-    <p>
-      {% blocktrans trimmed %}
-        A Tor SOCKS port is available on your {{ box_name }} on TCP port
-        9050.
-      {% endblocktrans %}
-    </p>
-
-  {% endif %}
-
+{% block internal_zone %}
+  {{ block.super }}
 {% endblock %}
-
 
 {% block page_js %}
-
-  <script type="text/javascript">
-  // @license magnet:?xt=urn:btih:0b31508aeb0634b347b8270c7bee4d411b5d4109&dn=agpl-3.0.txt AGPL v3.0 or later
-    (function($) {
-        $('#id_tor-relay_enabled').change(function() {
-            var bridge = $('#id_tor-bridge_relay_enabled');
-            var disable = ! $('#id_tor-relay_enabled').prop('checked');
-            bridge.prop('disabled', disable);
-            if (disable) {
-                $('#id_tor-bridge_relay_enabled').prop('checked', false);
-            }
-        }).change();
-
-        $('#id_tor-use_upstream_bridges').change(function() {
-            if ($('#id_tor-use_upstream_bridges').prop('checked')) {
-                $('#id_tor-upstream_bridges').parent().parent().show('slow');
-                $('#id_tor-relay_enabled').prop('checked', false)
-                                          .prop('disabled', true);
-                $('#id_tor-bridge_relay_enabled').prop('checked', false)
-                                                 .prop('disabled', true);
-            } else {
-                $('#id_tor-upstream_bridges').parent().parent().hide('slow');
-                $('#id_tor-relay_enabled').prop('disabled', false);
-            }
-        }).change();
-    })(jQuery);
-  // @license-end
-  </script>
-
+  <script type="text/javascript" src="{% static 'tor/tor.js' %}"></script>
 {% endblock %}

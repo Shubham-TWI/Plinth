@@ -1,52 +1,27 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
-"""
-Plinth module to configure Shadowsocks.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure Shadowsocks Client."""
 
 from django.urls import reverse_lazy
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.daemon import Daemon
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.package import Packages
 from plinth.utils import format_lazy
 
+from . import manifest, privileged
 
-version = 1
-
-name = _('Shadowsocks')
-
-short_description = _('Socks5 Proxy')
-
-service = None
-
-managed_services = ['shadowsocks-libev-local@freedombox']
-
-managed_packages = ['shadowsocks-libev']
-
-description = [
-    _('Shadowsocks is a lightweight and secure SOCKS5 proxy, designed to '
-      'protect your Internet traffic. It can be used to bypass Internet '
-      'filtering and censorship.'),
+_description = [
+    _('Shadowsocks is a tool for securely forwarding network requests to a'
+      ' remote server. It consists of two parts: (1) a Shadowsocks server,'
+      ' and (2) a Shadowsocks client with a SOCKS5 proxy.'),
+    _('Shadowsocks can be used to bypass Internet filtering and '
+      'censorship. This requires that the Shadowsocks server is in a '
+      'location where it can freely access the Internet, without '
+      'filtering.'),
     format_lazy(
         _('Your {box_name} can run a Shadowsocks client, that can connect to '
           'a Shadowsocks server. It will also run a SOCKS5 proxy. Local '
@@ -58,74 +33,64 @@ description = [
 ]
 
 
-def init():
-    """Intialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-send', 'shadowsocks:index',
-                     short_description)
+class ShadowsocksApp(app_module.App):
+    """FreedomBox app for Shadowsocks Client."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            'shadowsocks', name,
-            ports=['shadowsocks-local-plinth'], is_external=False,
-            is_enabled=is_enabled, is_running=is_running,
-            enable=enable, disable=disable)
+    app_id = 'shadowsocks'
 
-        if service.is_enabled():
-            add_shortcut()
+    _version = 3
 
+    DAEMON = 'shadowsocks-libev-local@freedombox'
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'shadowsocks', ['setup'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            'shadowsocks', name,
-            ports=['shadowsocks-local-plinth'], is_external=False,
-            is_enabled=is_enabled, is_running=is_running,
-            enable=enable, disable=disable)
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('Shadowsocks Client'),
+                               icon_filename='shadowsocks',
+                               short_description=_('Bypass Censorship'),
+                               description=_description,
+                               manual_page='Shadowsocks')
+        self.add(info)
 
-def add_shortcut():
-    """Helper method to add a shortcut to the frontpage."""
-    frontpage.add_shortcut('shadowsocks', name,
-                           short_description=short_description,
-                           details=description,
-                           configure_url=reverse_lazy('shadowsocks:index'),
-                           login_required=False)
+        menu_item = menu.Menu('menu-shadowsocks', info.name,
+                              info.short_description, info.icon_filename,
+                              'shadowsocks:index', parent_url_name='apps')
+        self.add(menu_item)
 
+        shortcut = frontpage.Shortcut(
+            'shortcut-shadowsocks', info.name,
+            short_description=info.short_description, icon=info.icon_filename,
+            description=info.description, manual_page=info.manual_page,
+            configure_url=reverse_lazy('shadowsocks:index'),
+            login_required=True)
+        self.add(shortcut)
 
-def is_enabled():
-    """Return whether service is enabled."""
-    return action_utils.service_is_enabled(managed_services[0])
+        packages = Packages('packages-shadowsocks', ['shadowsocks-libev'])
+        self.add(packages)
 
+        firewall = Firewall('firewall-shadowsocks', info.name,
+                            ports=['shadowsocks-local-plinth'],
+                            is_external=False)
+        self.add(firewall)
 
-def is_running():
-    """Return whether service is running."""
-    return action_utils.service_is_running(managed_services[0])
+        daemon = Daemon('daemon-shadowsocks', self.DAEMON,
+                        listen_ports=[(1080, 'tcp4'), (1080, 'tcp6')])
+        self.add(daemon)
 
+        backup_restore = BackupRestore('backup-restore-shadowsocks',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
-def enable():
-    """Enable service."""
-    actions.superuser_run('service', ['enable', managed_services[0]])
-    add_shortcut()
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup()
+        if not old_version:
+            self.enable()
 
-
-def disable():
-    """Disable service."""
-    actions.superuser_run('service', ['disable', managed_services[0]])
-    frontpage.remove_shortcut('shadowsocks')
-
-
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
-
-    results.append(action_utils.diagnose_port_listening(1080, 'tcp4'))
-    results.append(action_utils.diagnose_port_listening(1080, 'tcp6'))
-
-    return results
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()

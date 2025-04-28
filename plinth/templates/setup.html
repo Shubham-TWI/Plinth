@@ -1,125 +1,77 @@
 {% extends "base.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load bootstrap %}
 {% load i18n %}
-
-{% block page_head %}
-
-  {% if setup_helper.current_operation %}
-    <meta http-equiv="refresh" content="3" />
-  {% endif %}
-
-{% endblock %}
-
+{% load static %}
 
 {% block content %}
 
-  <h2>{% trans "Installation" %}: {{ setup_helper.module.short_description }} ({{ setup_helper.module.name }})</h2>
+  {% include "app-header.html" with setup=True %}
 
-  {% for paragraph in setup_helper.module.description %}
-    <p>{{ paragraph|safe }}</p>
-  {% endfor %}
+  {% include "toolbar.html" %}
 
-  {% include "clients.html" with clients=setup_helper.module.clients %}
+  {% if setup_state.value == 'up-to-date' %}
 
-  {% if not setup_helper.current_operation %}
+     <div class="app-just-installed">
+       {% trans "Application installed." %}
+     </div>
 
-    {% if setup_helper.get_state == 'needs-setup' %}
-      <p>
+  {% elif not operations %}
+
+    <p>
+      {% if setup_state.value == 'needs-setup' %}
         {% blocktrans trimmed %}
           Install this application?
         {% endblocktrans %}
-      </p>
-
-      <form action="" method="post">
-        {% csrf_token %}
-
-        {% if package_manager_is_busy %}
-          <div class="alert alert-warning" role="alert">
-            {% blocktrans trimmed %}
-              Another installation or upgrade is already running.
-              Please wait for a few moments before trying again.
-            {% endblocktrans %}
-          </div>
-          <input type="submit" class="btn btn-md btn-primary"
-                 disabled="disabled" value="{% trans "Install" %}" />
-        {% else %}
-          <input type="submit" class="btn btn-md btn-primary"
-                 value="{% trans "Install" %}" />
-        {% endif %}
-      </form>
-    {% elif setup_helper.get_state == 'needs-update' %}
-      <p>
+      {% elif setup_state.value == 'needs-update' %}
         {% blocktrans trimmed %}
           This application needs an update. Update now?
         {% endblocktrans %}
-      </p>
+      {% endif %}
+    </p>
 
-      <form action="" method="post">
-        {% csrf_token %}
+    <form class="form-install" action="" method="post">
+      {% csrf_token %}
 
-        {% if package_manager_is_busy %}
-          <div class="alert alert-warning" role="alert">
-            {% blocktrans trimmed %}
-              Another installation or upgrade is already running.
-              Please wait for a few moments before trying again.
-            {% endblocktrans %}
-          </div>
-          <input type="submit" class="btn btn-md btn-primary"
-                 disabled="disabled" value="{% trans "Install" %}" />
-        {% else %}
-          <input type="submit" class="btn btn-md btn-primary"
-                 value="{% trans "Update" %}" />
-        {% endif %}
-      </form>
-    {% endif %}
+      {% if has_unavailable_packages %}
+        <div class="alert alert-warning" role="alert">
+          {% blocktrans trimmed %}
+            This application is currently not available in your distribution.
+          {% endblocktrans %}
+          <button type="submit" class="btn btn-default btn-sm" name="refresh-packages">
+            <span class="fa fa-refresh"></span> {% trans "Check again" %}
+          </button>
+        </div>
+      {% elif package_conflicts and package_conflicts_action.value != 'ignore' %}
+        <div class="alert alert-warning" role="alert">
+          {% blocktrans trimmed %}
+            <strong>Conflicting Packages:</strong> Some packages installed on
+            the system conflict with the installation of this app. The following
+            packages will be removed if you proceed:
+          {% endblocktrans %}
+          {% for package in package_conflicts %}
+            {{ package }}
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <input type="submit" class="btn btn-md btn-primary" name="install"
+             {% if has_unavailable_packages %}
+             disabled="disabled"
+             {% endif %}
+             {% if setup_state.value == 'needs-setup' %}
+             value="{% trans "Install" %}"
+             {% elif setup_state.value == 'needs-update' %}
+             value="{% trans "Update" %}"
+             {% endif %} />
+
+    </form>
 
   {% else %}
-
-    {% if setup_helper.current_operation.step == 'pre' %}
-      {% trans "Performing pre-install operation" %}
-    {% elif setup_helper.current_operation.step == 'post' %}
-      {% trans "Performing post-install operation" %}
-    {% elif setup_helper.current_operation.step == 'install' %}
-      {% with transaction=setup_helper.current_operation.transaction %}
-        <div>
-          {% blocktrans trimmed with package_names=transaction.package_names|join:", " status=transaction.status_string %}
-            Installing {{ package_names }}: {{ status }}
-          {% endblocktrans %}
-        </div>
-        <div class="progress">
-          <div class="progress-bar progress-bar-striped active"
-               role="progressbar" aria-valuemin="0" aria-valuemax="100"
-               aria-valuenow="{{ transaction.percentage }}"
-               style="width: {{ transaction.percentage }}%">
-            <span class="sr-only">
-              {% blocktrans trimmed with percentage=transaction.percentage %}
-                {{ percentage }}% complete
-              {% endblocktrans %}
-            </span>
-          </div>
-        </div>
-      {% endwith %}
-    {% endif %}
-
+    {% include "operations.html" %}
   {% endif %}
 
 {% endblock %}

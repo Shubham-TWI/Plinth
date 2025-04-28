@@ -1,50 +1,33 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
 URLs for the Users module
 """
 
-from django.conf.urls import url
-from django.urls import reverse_lazy
-
-from axes.decorators import axes_dispatch
-from plinth.modules.sso.views import SSOLoginView, SSOLogoutView
-from plinth.utils import non_admin_view
+from django.urls import re_path
 from stronghold.decorators import public
+
+from plinth.modules.sso.views import CaptchaView, SSOLoginView, logout
+from plinth.utils import non_admin_view
 
 from . import views
 
 urlpatterns = [
-    url(r'^sys/users/$', views.UserList.as_view(), name='index'),
-    url(r'^sys/users/create/$', views.UserCreate.as_view(), name='create'),
-    url(r'^sys/users/(?P<slug>[\w.@+-]+)/edit/$',
-        non_admin_view(views.UserUpdate.as_view()), name='edit'),
-    url(r'^sys/users/(?P<slug>[\w.@+-]+)/delete/$',
-        views.UserDelete.as_view(), name='delete'),
-    url(r'^sys/users/(?P<slug>[\w.@+-]+)/change_password/$',
-        non_admin_view(views.UserChangePassword.as_view()),
-        name='change_password'),
+    re_path(r'^sys/users/$', views.UserList.as_view(), name='index'),
+    re_path(r'^sys/users/create/$', views.UserCreate.as_view(), name='create'),
+    re_path(r'^sys/users/(?P<slug>[\w.@+-]+)/edit/$',
+            non_admin_view(views.UserUpdate.as_view()), name='edit'),
+    re_path(r'^sys/users/(?P<slug>[\w.@+-]+)/delete/$',
+            views.UserDelete.as_view(), name='delete'),
+    re_path(r'^sys/users/(?P<slug>[\w.@+-]+)/change_password/$',
+            non_admin_view(views.UserChangePassword.as_view()),
+            name='change_password'),
 
     # Authnz is handled by SSO
-    url(r'^accounts/login/$',
-        public(axes_dispatch(SSOLoginView.as_view())), name='login'),
-    url(r'^accounts/logout/$',
-        non_admin_view(SSOLogoutView.as_view()),
-        {'next_page': reverse_lazy('index')}, name='logout'),
-    url(r'^users/firstboot/$',
-        public(views.FirstBootView.as_view()), name='firstboot'),
+    re_path(r'^accounts/login/$', public(SSOLoginView.as_view()),
+            name='login'),
+    re_path(r'^accounts/logout/$', public(logout), name='logout'),
+    re_path(r'^users/firstboot/$', public(views.FirstBootView.as_view()),
+            name='firstboot'),
+    re_path(r'accounts/login/locked/$', public(CaptchaView.as_view()),
+            name='locked_out'),
 ]

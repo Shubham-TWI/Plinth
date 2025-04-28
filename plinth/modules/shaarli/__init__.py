@@ -1,101 +1,72 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module to configure Shaarli.
+FreedomBox app to configure Shaarli.
 """
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from .manifest import clients
+from plinth import app as app_module
+from plinth import frontpage, menu
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.package import Packages
 
+from . import manifest
 
-version = 1
-
-managed_packages = ['shaarli']
-
-name = _('Shaarli')
-
-short_description = _('Bookmarks')
-
-description = [
+_description = [
     _('Shaarli allows you to save and share bookmarks.'),
-
-    _('When enabled, Shaarli will be available from <a href="/shaarli">'
-      '/shaarli</a> path on the web server. Note that Shaarli only supports a '
-      'single user account, which you will need to setup on the initial '
-      'visit.'),
+    _('Note that Shaarli only supports a single user account, which you will '
+      'need to setup on the initial visit.'),
 ]
 
-clients = clients
 
-service = None
+class ShaarliApp(app_module.App):
+    """FreedomBox app for Shaarli."""
 
+    app_id = 'shaarli'
 
-def init():
-    """Initialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-bookmark', 'shaarli:index', short_description)
+    _version = 1
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            'shaarli', name, ports=['http', 'https'], is_external=True,
-            is_enabled=is_enabled, enable=enable, disable=disable)
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-        if is_enabled():
-            add_shortcut()
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('Shaarli'), icon_filename='shaarli',
+                               short_description=_('Bookmarks'),
+                               description=_description, manual_page='Shaarli',
+                               clients=manifest.clients)
+        self.add(info)
 
+        menu_item = menu.Menu('menu-shaarli', info.name,
+                              info.short_description, info.icon_filename,
+                              'shaarli:index', parent_url_name='apps')
+        self.add(menu_item)
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    global service
-    if service is None:
-        service = service_module.Service(
-            'shaarli', name, ports=['http', 'https'], is_external=True,
-            is_enabled=is_enabled, enable=enable, disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+        shortcut = frontpage.Shortcut('shortcut-shaarli', info.name,
+                                      short_description=info.short_description,
+                                      icon=info.icon_filename, url='/shaarli',
+                                      clients=info.clients,
+                                      login_required=True)
+        self.add(shortcut)
 
+        packages = Packages('packages-shaarli', ['shaarli'])
+        self.add(packages)
 
-def add_shortcut():
-    frontpage.add_shortcut('shaarli', name, short_description=short_description, url='/shaarli',
-                           login_required=True)
+        firewall = Firewall('firewall-shaarli', info.name,
+                            ports=['http', 'https'], is_external=True)
+        self.add(firewall)
 
+        webserver = Webserver('webserver-shaarli', 'shaarli')
+        self.add(webserver)
 
-def is_enabled():
-    """Return whether the module is enabled."""
-    return action_utils.webserver_is_enabled('shaarli')
+        backup_restore = BackupRestore('backup-restore-shaarli',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
-
-def enable():
-    """Enable the module."""
-    actions.superuser_run('shaarli', ['enable'])
-    add_shortcut()
-
-
-def disable():
-    """Enable the module."""
-    actions.superuser_run('shaarli', ['disable'])
-    frontpage.remove_shortcut('shaarli')
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if not old_version:
+            self.enable()

@@ -1,56 +1,31 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Plinth module to configure Roundcube.
+FreedomBox app to configure Roundcube.
 """
 
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-from plinth import actions
-from plinth import action_utils
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from .manifest import clients
+from plinth import app as app_module
+from plinth import frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.package import Packages, install
 
+from . import manifest, privileged
 
-version = 1
-
-managed_packages = ['sqlite3', 'roundcube', 'roundcube-sqlite3']
-
-name = _('Roundcube')
-
-short_description = _('Email Client')
-
-description = [
+_description = [
     _('Roundcube webmail is a browser-based multilingual IMAP '
       'client with an application-like user interface. It provides '
       'full functionality you expect from an email client, including '
       'MIME support, address book, folder manipulation, message '
       'searching and spell checking.'),
-
-    _('You can access Roundcube from <a href="/roundcube">'
-      '/roundcube</a>. Provide the username and password of the email '
+    _('You can use it by providing the username and password of the email '
       'account you wish to access followed by the domain name of the '
       'IMAP server for your email provider, like <code>imap.example.com'
       '</code>.  For IMAP over SSL (recommended), fill the server field '
       'like <code>imaps://imap.example.com</code>.'),
-
     _('For Gmail, username will be your Gmail address, password will be '
       'your Google account password and server will be '
       '<code>imaps://imap.gmail.com</code>.  Note that you will also need '
@@ -59,68 +34,88 @@ description = [
       '>https://www.google.com/settings/security/lesssecureapps</a>).'),
 ]
 
-clients = clients
 
-service = None
+class RoundcubeApp(app_module.App):
+    """FreedomBox app for Roundcube."""
 
+    app_id = 'roundcube'
 
-def init():
-    """Intialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-envelope', 'roundcube:index', short_description)
+    _version = 4
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            'roundcube', name, ports=['http', 'https'], is_external=True,
-            is_enabled=is_enabled, enable=enable, disable=disable)
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
-        if is_enabled():
-            add_shortcut()
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('Roundcube'), icon_filename='roundcube',
+                               short_description=_('Email Client'),
+                               description=_description,
+                               manual_page='Roundcube',
+                               clients=manifest.clients)
+        self.add(info)
 
+        menu_item = menu.Menu('menu-roundcube', info.name,
+                              info.short_description, info.icon_filename,
+                              'roundcube:index', parent_url_name='apps')
+        self.add(menu_item)
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.call('pre', actions.superuser_run, 'roundcube', ['pre-install'])
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'roundcube', ['setup'])
-    helper.call('post', add_shortcut)
-    global service
-    if service is None:
-        service = service_module.Service(
-            'roundcube', name, ports=['http', 'https'], is_external=True,
-            is_enabled=is_enabled, enable=enable, disable=disable)
+        shortcut = frontpage.Shortcut('shortcut-roundcube', info.name,
+                                      short_description=info.short_description,
+                                      icon=info.icon_filename,
+                                      url='/roundcube/', clients=info.clients,
+                                      login_required=True)
+        self.add(shortcut)
 
+        packages = Packages(
+            'packages-roundcube',
+            ['sqlite3', 'roundcube', 'roundcube-core', 'roundcube-sqlite3'])
+        self.add(packages)
 
-def add_shortcut():
-    frontpage.add_shortcut(
-        'roundcube', name, short_description=short_description, url='/roundcube',
-        login_required=True)
+        dropin_configs = DropinConfigs('dropin-configs-roundcube', [
+            '/etc/apache2/conf-available/roundcube-freedombox.conf',
+            '/etc/fail2ban/jail.d/roundcube-auth-freedombox.conf',
+        ])
+        self.add(dropin_configs)
 
+        firewall = Firewall('firewall-roundcube', info.name,
+                            ports=['http', 'https'], is_external=True)
+        self.add(firewall)
 
-def is_enabled():
-    """Return whether the module is enabled."""
-    return action_utils.webserver_is_enabled('roundcube')
+        webserver = Webserver('webserver-roundcube', 'roundcube')
+        self.add(webserver)
 
+        webserver = Webserver('webserver-roundcube-freedombox',
+                              'roundcube-freedombox',
+                              urls=['https://{host}/roundcube'])
+        self.add(webserver)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('roundcube', ['enable'])
-    add_shortcut()
+        backup_restore = BackupRestore('backup-restore-roundcube',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
+    def setup(self, old_version):
+        """Install and configure the app."""
+        privileged.pre_install()
+        super().setup(old_version)
+        privileged.setup()
+        if old_version == 0:
+            privileged.set_config(local_only=True)
+            self.enable()
 
-def disable():
-    """Enable the module."""
-    actions.superuser_run('roundcube', ['disable'])
-    frontpage.remove_shortcut('roundcube')
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()
 
+    def force_upgrade(self, packages):
+        """Force upgrade package to resolve conffile prompts."""
+        if 'roundcube-core' not in packages:
+            return False
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+        # Allow roundcube any version to upgrade to any version. This is okay
+        # because there will no longer be conflicting file changes.
+        install(['roundcube-core'], force_configuration='new')
+        if self.get_component('webserver-roundcube').is_enabled():
+            self.get_component('webserver-roundcube-freedombox').enable()
 
-    results.extend(action_utils.diagnose_url_on_all(
-        'https://{host}/roundcube', check_certificate=False))
-
-    return results
+        return True

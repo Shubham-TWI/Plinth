@@ -1,75 +1,70 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-
-"""
-Views for security module
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Views for security module."""
 
 from django.contrib import messages
 from django.template.response import TemplateResponse
-from django.utils.translation import ugettext as _
+from django.utils.translation import gettext as _
+
+from plinth import action_utils
+from plinth.modules import security
+from plinth.modules.upgrades import is_backports_requested
+from plinth.privileged import service as service_privileged
+from plinth.views import AppView
 
 from .forms import SecurityForm
-from plinth.modules import security
-from plinth import actions
-from plinth import action_utils
 
 
-def index(request):
-    """Serve the security configuration form"""
-    status = get_status(request)
+class SecurityAppView(AppView):
+    """Show security app main page."""
 
-    form = None
+    app_id = 'security'
+    template_name = 'security.html'
+    form_class = SecurityForm
+    prefix = 'security'
 
-    if request.method == 'POST':
-        form = SecurityForm(request.POST, initial=status, prefix='security')
-        if form.is_valid():
-            _apply_changes(request, status, form.cleaned_data)
-            status = get_status(request)
-            form = SecurityForm(initial=status, prefix='security')
-    else:
-        form = SecurityForm(initial=status, prefix='security')
+    def get_initial(self):
+        """Return the values to fill in the form."""
+        initial = super().get_initial()
+        initial.update(get_status(self.request))
+        return initial
 
-    return TemplateResponse(request, 'security.html',
-                            {'title': _('Security'),
-                             'form': form})
+    def get_context_data(self, *args, **kwargs):
+        """Add additional context data for template."""
+        context = super().get_context_data(*args, **kwargs)
+        context['is_backports_requested'] = is_backports_requested()
+        return context
+
+    def form_valid(self, form):
+        """Apply the changes submitted in the form."""
+        _apply_changes(self.request, form.initial, form.cleaned_data)
+        return super().form_valid(form)
 
 
 def get_status(request):
-    """Return the current status"""
-    return {'restricted_access': security.get_restricted_access_enabled(),
-            'fail2ban_enabled': action_utils.service_is_enabled('fail2ban')}
+    """Return the current status."""
+    return {'fail2ban_enabled': action_utils.service_is_enabled('fail2ban')}
 
 
 def _apply_changes(request, old_status, new_status):
-    """Apply the form changes"""
-    if old_status['restricted_access'] != new_status['restricted_access']:
-        try:
-            security.set_restricted_access(new_status['restricted_access'])
-        except Exception as exception:
-            messages.error(
-                request,
-                _('Error setting restricted access: {exception}')
-                .format(exception=exception))
-        else:
-            messages.success(request, _('Updated security configuration'))
-
+    """Apply the form changes."""
     if old_status['fail2ban_enabled'] != new_status['fail2ban_enabled']:
         if new_status['fail2ban_enabled']:
-            actions.superuser_run('service', ['enable', 'fail2ban'])
+            service_privileged.enable('fail2ban')
         else:
-            actions.superuser_run('service', ['disable', 'fail2ban'])
+            service_privileged.disable('fail2ban')
+
+        messages.success(request, _('Configuration updated.'))
+
+
+def report(request):
+    """Serve the security report page."""
+    apps_report = security.get_apps_report()
+    return TemplateResponse(
+        request, 'security_report.html', {
+            'title':
+                _('Security Report'),
+            'freedombox_report':
+                apps_report.pop('freedombox'),
+            'apps_report':
+                sorted(apps_report.values(), key=lambda app: app['name']),
+        })

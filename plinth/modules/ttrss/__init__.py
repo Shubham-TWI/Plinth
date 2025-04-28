@@ -1,135 +1,154 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure Tiny Tiny RSS."""
 
-"""
-Plinth module to configure Tiny Tiny RSS.
-"""
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
 
-from django.utils.translation import ugettext_lazy as _
-from plinth.utils import format_lazy
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import Firewall
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages, install
+from plinth.utils import Version, format_lazy
 
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
-from plinth.modules.users import create_group, register_group
-from .manifest import clients
+from . import manifest, privileged
 
-
-version = 2
-
-managed_services = ['tt-rss']
-
-managed_packages = ['tt-rss', 'postgresql', 'dbconfig-pgsql',
-                    'php-pgsql', 'python3-psycopg2']
-
-name = _('Tiny Tiny RSS')
-
-short_description = _('News Feed Reader')
-
-description = [
+_description = [
     _('Tiny Tiny RSS is a news feed (RSS/Atom) reader and aggregator, '
       'designed to allow reading news from any location, while feeling as '
       'close to a real desktop application as possible.'),
-
     format_lazy(
-        _('When enabled, Tiny Tiny RSS will be available from <a href="/tt-'
-          'rss">/tt-rss</a> path on the web server. It can be accessed by '
-          'any <a href="/plinth/sys/users">user with a {box_name} login</a>.'),
-        box_name=_(cfg.box_name)),
-
+        _('When enabled, Tiny Tiny RSS can be accessed by '
+          '<a href="{users_url}">any user</a> belonging to the '
+          'feed-reader group.'), box_name=_(cfg.box_name),
+        users_url=reverse_lazy('users:index')),
     format_lazy(
         _('When using a mobile or desktop application for Tiny Tiny RSS, use '
-          'the URL <a href="/tt-rss-app/">/tt-rss-app</a> for connecting.'))
+          'the URL <a href="/tt-rss/">/tt-rss</a> or '
+          '<a href="/tt-rss-app/">/tt-rss-app</a> for connecting.'))
 ]
 
-clients = clients
 
-group = ('feed-reader', _('Read and subscribe to news feeds'))
+class TTRSSApp(app_module.App):
+    """FreedomBox app for TT-RSS."""
 
-service = None
+    app_id = 'ttrss'
+
+    _version = 6
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        groups = {'feed-reader': _('Read and subscribe to news feeds')}
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('Tiny Tiny RSS'), icon_filename='ttrss',
+                               short_description=_('News Feed Reader'),
+                               description=_description,
+                               manual_page='TinyTinyRSS',
+                               clients=manifest.clients,
+                               donation_url='https://www.patreon.com/cthulhoo')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-ttrss', info.name, info.short_description,
+                              info.icon_filename, 'ttrss:index',
+                              parent_url_name='apps')
+        self.add(menu_item)
+
+        shortcut = frontpage.Shortcut('shortcut-ttrss', info.name,
+                                      short_description=info.short_description,
+                                      icon=info.icon_filename, url='/tt-rss',
+                                      clients=info.clients,
+                                      login_required=True,
+                                      allowed_groups=list(groups))
+        self.add(shortcut)
+
+        packages = Packages('packages-ttrss', [
+            'tt-rss', 'postgresql', 'dbconfig-pgsql', 'php-pgsql',
+            'python3-psycopg2'
+        ])
+        self.add(packages)
+
+        dropin_configs = DropinConfigs('dropin-configs-ttrss', [
+            '/etc/apache2/conf-available/tt-rss-plinth.conf',
+        ])
+        self.add(dropin_configs)
+
+        firewall = Firewall('firewall-ttrss', info.name,
+                            ports=['http', 'https'], is_external=True)
+        self.add(firewall)
+
+        webserver = Webserver('webserver-ttrss', 'tt-rss-plinth',
+                              urls=['https://{host}/tt-rss'],
+                              last_updated_version=5)
+        self.add(webserver)
+
+        daemon = Daemon('daemon-ttrss', 'tt-rss')
+        self.add(daemon)
+
+        users_and_groups = UsersAndGroups('users-and-groups-ttrss',
+                                          groups=groups)
+        self.add(users_and_groups)
+
+        backup_restore = TTRSSBackupRestore('backup-restore-ttrss',
+                                            **manifest.backup)
+        self.add(backup_restore)
+
+    def enable(self):
+        """Enable components and API access."""
+        privileged.enable_api_access()
+
+        # Try to set the domain to one of the available TLS domains
+        domain = privileged.get_domain()
+        if not domain or domain == 'localhost':
+            from plinth.modules import names
+            domain = next(names.get_available_tls_domains(), None)
+            privileged.set_domain(domain)
+
+        super().enable()
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        privileged.pre_setup()
+        super().setup(old_version)
+        privileged.setup()
+        if not old_version:
+            self.enable()
+
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        privileged.uninstall()
+        super().uninstall()
+
+    def force_upgrade(self, packages):
+        """Force update package to resolve conffile prompts."""
+        if 'tt-rss' not in packages:
+            return False
+
+        # Allow tt-rss any lower version to upgrade to 21.*
+        package = packages['tt-rss']
+        if Version(package['new_version']) > Version('22~'):
+            return False
+
+        install(['tt-rss'], force_configuration='new')
+        privileged.setup()
+        return True
 
 
-def init():
-    """Intialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-envelope', 'ttrss:index',
-                     short_description)
+class TTRSSBackupRestore(BackupRestore):
+    """Component to backup/restore TT-RSS."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0], name, ports=['http', 'https'],
-            is_external=True,
-            is_enabled=is_enabled, enable=enable, disable=disable)
+    def backup_pre(self, packet):
+        """Save database contents."""
+        super().backup_pre(packet)
+        privileged.dump_database()
 
-        if is_enabled():
-            add_shortcut()
-            register_group(group)
-
-
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.call('pre', actions.superuser_run, 'ttrss', ['pre-setup'])
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'ttrss', ['setup'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0], name, ports=['http', 'https'],
-            is_external=True,
-            is_enabled=is_enabled, enable=enable, disable=disable)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
-    create_group(group[0])
-
-
-def add_shortcut():
-    """Add a shortcut to the front page."""
-    frontpage.add_shortcut('ttrss', name, short_description=short_description,
-                           url='/tt-rss', login_required=True)
-
-
-def is_enabled():
-    """Return whether the module is enabled."""
-    return (action_utils.service_is_enabled('tt-rss') and
-            action_utils.webserver_is_enabled('tt-rss-plinth'))
-
-
-def enable():
-    """Enable the module."""
-    actions.superuser_run('ttrss', ['enable'])
-    add_shortcut()
-
-
-def disable():
-    """Enable the module."""
-    actions.superuser_run('ttrss', ['disable'])
-    frontpage.remove_shortcut('ttrss')
-
-
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
-
-    results.extend(action_utils.diagnose_url_on_all(
-        'https://{host}/tt-rss', check_certificate=False))
-
-    return results
+    def restore_post(self, packet):
+        """Restore database contents."""
+        super().restore_post(packet)
+        privileged.restore_database()

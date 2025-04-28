@@ -1,26 +1,28 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """
-Forms for the Single Sign On module of Plinth
+Forms for the Single Sign On app of FreedomBox.
 """
 
-from django.contrib.auth.forms import AuthenticationForm as DjangoAuthenticationForm
 from captcha.fields import CaptchaField
+from django import forms
+from django.contrib.auth.forms import \
+    AuthenticationForm as DjangoAuthenticationForm
+from django.utils.translation import gettext_lazy as _
 
 
 class AuthenticationForm(DjangoAuthenticationForm):
-    captcha = CaptchaField()
+    """Authentication form with an additional username field attributes."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['username'].widget.attrs.update({
+            'autofocus': 'autofocus',
+            'autocapitalize': 'none',
+            'autocomplete': 'username'
+        })
+
+
+class CaptchaForm(forms.Form):
+    """Form with a CAPTCHA field to use after 3 invalid login attempts."""
+    captcha = CaptchaField(
+        label=_('Enter the letters in the image to proceed to the login page'))

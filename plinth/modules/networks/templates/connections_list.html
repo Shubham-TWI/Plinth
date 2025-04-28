@@ -1,115 +1,87 @@
-{% extends "base.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load bootstrap %}
 {% load i18n %}
 
-{% block page_head %}
-  <style type="text/css">
-    .connection-status-label {
-        display: inline-block;
-        width: 5.5em;
-        padding: 5px 0px;
-        text-align: center;
-        margin-right: 10px;
-    }
+  <h3>{% trans "Connections" %}</h3>
 
-    .connection-show-label {
-        display: inline-block;
-        width: 40%;
-    }
-
-    .connection-type-label {
-        display: inline-block;
-    }
-
-    .list-group-item .btn {
-        margin: -2px 0;
-    }
-
-    .form.pull-right {
-        margin-right: 20px;
-    }
-
-    .form button {
-        width: 7em;
-    }
-  </style>
-{% endblock %}
-
-{% block content %}
-
-  <div class="row">
-    <div class="col-lg-12">
-      <div class="list-group">
-        {% for connection in connections %}
-          <div class="list-group-item clearfix">
-            <a href="{% url 'networks:delete' connection.uuid %}"
-               class="btn btn-default btn-sm pull-right"
-               role="button"
-               title="{% blocktrans with name=connection.name %}Delete connection {{ name }}{% endblocktrans %}">
-              <span class="glyphicon glyphicon-trash"
-                    aria-hidden="true"></span>
-            </a>
-
-            {% if connection.is_active %}
-              <form class="form pull-right" method="post"
-                    action="{% url 'networks:deactivate' connection.uuid %}">
-                {% csrf_token %}
-
-                <button type="submit" class="btn btn-default btn-sm">
-                  {% trans "Deactivate" %}</button>
-              </form>
-            {% else %}
-              <form class="form pull-right" method="post"
-                    action="{% url 'networks:activate' connection.uuid %}">
-                {% csrf_token %}
-
-                <button type="submit" class="btn btn-default btn-sm">
-                  {% trans "Activate" %}</button>
-              </form>
-            {% endif %}
-
-            {% if connection.is_active %}
-              <span class="label label-success connection-status-label">
-                {% trans "Active" %}</span>
-            {% else %}
-              <span class="label label-warning connection-status-label">
-                {% trans "Inactive" %}</span>
-            {% endif %}
-
-            <a class="connection-show-label"
-               href="{% url 'networks:show' connection.uuid %}"
-               title="Show connection {{ connection.name }}">
-              {{ connection.name }}
-            </a>
-
-            <span class="connection-type-label">{{ connection.type_name }}</span>
-          </div>
-        {% endfor %}
-      </div>
-
-      {% include "connections_diagram.html" %}
-
-      {% include "diagnostics_button.html" with module="networks" enabled=True %}
-    </div>
+  <div class="btn-toolbar">
+    <a href="{% url 'networks:scan' %}" class="btn btn-default"
+       role="button" title="{% trans 'Nearby Wi-Fi Networks' %}">
+      <span class="fa fa-wifi" aria-hidden="true"></span>
+      {% trans "Nearby Wi-Fi Networks" %}
+    </a>
+    <a href="{% url 'networks:add' %}" class="btn btn-default"
+       role="button" title="{% trans 'Add Connection' %}">
+      <span class="fa fa-plus" aria-hidden="true"></span>
+      {% trans "Add Connection" %}
+    </a>
   </div>
 
-{% endblock %}
+  <div class="table-responsive">
+    <table class="table">
+      <tbody>
+        {% for connection in connections %}
+          <tr>
+            <td class="connection-status-cell">
+              {% if connection.is_active %}
+                <span class="badge badge-success connection-status-label">
+                  {% trans "Active" %}
+                </span>
+              {% else %}
+                <span class="badge badge-warning connection-status-label">
+                  {% trans "Inactive" %}
+                </span>
+              {% endif %}
+            </td>
+
+            <td>
+              <a class="connection-show-label"
+                 href="{% url 'networks:show' connection.uuid %}"
+                 title="{% blocktrans with name=connection.name %}Show connection {{ name }}{% endblocktrans %}">
+                {{ connection.name }}
+              </a>
+            </td>
+
+            <td>
+              <span class="connection-type-label">
+                {{ connection.type_name }}
+              </span>
+            </td>
+
+            <td class="connection-actions">
+              {% if connection.is_active %}
+                {% if not connection.primary %}
+                  <form class="form form-action" method="post"
+                        action="{% url 'networks:deactivate' connection.uuid %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-default btn-sm">
+                      {% trans "Deactivate" %}</button>
+                  </form>
+                {% endif %}
+              {% else %}
+                <form class="form form-action" method="post"
+                      action="{% url 'networks:activate' connection.uuid %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-default btn-sm">
+                    {% trans "Activate" %}</button>
+                </form>
+              {% endif %}
+
+              {% if not connection.primary %}
+                <a href="{% url 'networks:delete' connection.uuid %}"
+                   class="btn btn-default btn-sm"
+                   role="button"
+                   title="{% blocktrans with name=connection.name %}Delete connection {{ name }}{% endblocktrans %}">
+                  <span class="fa fa-trash-o" aria-hidden="true"></span>
+                </a>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% include "connections_diagram.html" %}

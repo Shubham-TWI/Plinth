@@ -1,70 +1,52 @@
-{% extends "base.html" %}
+{% extends "app.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load bootstrap %}
 {% load i18n %}
 
-{% block page_head %}
-  <style type="text/css">
-    .user-edit-label {
-      display: inline-block;
-      width: 75%;
-    }
-    .list-group-item .btn {
-      margin: -5px 0;
-    }
-  </style>
-{% endblock %}
+{% block configuration %}
 
-{% block content %}
+  <h3>{% trans "Users" %}</h3>
+
+  <div class="btn-toolbar">
+    <a href="{% url 'users:create' %}" class="btn btn-primary"
+       role="button" title="{% trans 'Create User' %}">
+      <span class="fa fa-plus" aria-hidden="true"></span>
+      {% trans 'Create User' %}
+    </a>
+  </div>
 
   <div class="row">
-    <div class="col-sm-6">
-      <div class="list-group">
+    <div class="col-md-6">
+      <div class="list-group list-group-two-column">
         {% for user in object_list %}
-          <div class="list-group-item clearfix">
-            {% if object_list|length != 1 %}
-              <a href="{% url 'users:delete' user.username %}"
-                class="btn btn-default btn-sm pull-right"
-                role="button"
-                title="{% blocktrans with username=user.username %}Delete user {{ username }}{% endblocktrans %}">
-                <span class="glyphicon glyphicon-trash"
-                      aria-hidden="true"></span>
-              </a>
-            {% endif %}
-
-            <a class='user-edit-label'
+          <div class="list-group-item">
+            <a class='user-edit-label primary'
                href="{% url 'users:edit' user.username %}"
                title="{% blocktrans with username=user.username %}Edit user {{ username }}{% endblocktrans %}">
               {{ user.username }}
             </a>
 
             {% if not user.is_active %}
-              <span class="glyphicon glyphicon-ban-circle"
+              <span class="fa fa-ban primary"
                     aria-hidden="true"></span>
+            {% endif %}
+
+            {% if user.username != last_admin_user %}
+              <a href="{% url 'users:delete' user.username %}"
+                 class="btn btn-default btn-sm secondary"
+                 role="button"
+                 title="{% blocktrans with username=user.username %}Delete user {{ username }}{% endblocktrans %}">
+                <span class="fa fa-trash-o"
+                      aria-hidden="true"></span>
+              </a>
             {% endif %}
           </div>
         {% endfor %}
       </div>
 
-      {% include "diagnostics_button.html" with module="users" enabled=True %}
     </div>
   </div>
 

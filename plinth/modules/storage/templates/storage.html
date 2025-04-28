@@ -1,81 +1,80 @@
-{% extends "base.html" %}
+{% extends "app.html" %}
 {% comment %}
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
 {% endcomment %}
 
 {% load bootstrap %}
 {% load i18n %}
+{% load static %}
 
 {% block page_head %}
-  <style type="text/css">
-    .progress {
-        margin-bottom: 0;
-    }
-  </style>
+  <link type="text/css" rel="stylesheet"
+        href="{% static 'storage/storage.css' %}"/>
 {% endblock %}
 
-{% block content %}
-  <h2>{{ title }}</h2>
+{% block configuration %}
 
-  <div>{% trans "The following disks are in use:" %}</div>
-  <div class="row">
-    <div class="col-lg-12">
-      <table class="table table-bordered table-condensed table-striped">
-        <thead>
+  <p>{% trans "The following storage devices are in use:" %}</p>
+
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>{% trans "Device" %}</th>
+          <th>{% trans "Label" %}</th>
+          <th>{% trans "Mount Point" %}</th>
+          <th>{% trans "Type" %}</th>
+          <th>{% trans "Used" %}</th>
+          <th>{% trans "Actions" %}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for disk in disks %}
           <tr>
-            <th>{% trans "Device" %}</th>
-            <th>{% trans "Mount Point" %}</th>
-            <th>{% trans "Type" %}</th>
-            <th>{% trans "Used" %}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for disk in disks %}
-            <tr>
-              <td>{{ disk.dev_kname }}</td>
-              <td>{{ disk.mount_point }}</td>
-              <td>{{ disk.file_system_type }}</td>
-              <td>
+            <td>{{ disk.device }}</td>
+            <td>{{ disk.label|default_if_none:"" }}</td>
+            <td>{{ disk.mount_points|join:"<br>" }}</td>
+            <td>{{ disk.filesystem_type }}</td>
+            <td>
+              {% if 'percent_used' in disk %}
                 <div class="progress">
-                  {% if disk.percent_used < 75 %}
-                    <div class="progress-bar progress-bar-striped progress-bar-success"
-                  {% elif disk.percent_used < 90 %}
-                    <div class="progress-bar progress-bar-striped progress-bar-warning"
-                  {% else %}
-                    <div class="progress-bar progress-bar-striped progress-bar-danger"
-                  {% endif %}
-                         role="progressbar" aria-valuenow="disk.percent_used"
-                         aria-valuemin="0" aria-valuemax="100"
-                         style="width: {{ disk.percent_used }}%;">
-                      {{ disk.percent_used }}%
-                    </div>
+                  <div class="progress-bar progress-bar-striped
+                              {% if disk.percent_used < 75 %}
+                                bg-success
+                              {% elif disk.percent_used < 90 %}
+                                bg-warning
+                              {% else %}
+                                bg-danger
+                              {% endif %}
+                              w-{{ disk.percent_used }}"
+                       role="progressbar" aria-valuenow="disk.percent_used"
+                       aria-valuemin="0" aria-valuemax="100">
+                    {{ disk.percent_used }}%
+                  </div>
                 </div>
                 <div>{{ disk.used_str }} / {{ disk.size_str }}</div>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
+              {% endif %}
+            </td>
+            <td>
+              {% if disk.is_removable %}
+                <form class="form" method="post"
+                      action="{% url 'storage:eject' disk.device|urlencode:'' %}">
+                  {% csrf_token %}
+
+                  <button type="submit"
+                          class="btn btn-sm btn-default fa fa-eject">
+                  </button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
 
-  <h3>{% trans "Partition Expansion" %}</h3>
   {% if expandable_root_size %}
+    <h3>{% trans "Partition Expansion" %}</h3>
     <p>
       {% blocktrans trimmed %}
         There is {{ expandable_root_size }} of unallocated space
@@ -89,18 +88,14 @@
          role="button">
         {% trans "Expand Root Partition" %}</a>
     </p>
-  {% else %}
-    <p>
-      {% blocktrans trimmed %}
-        There is no unallocated space after your root partition.
-        There is no need to expand it.
-      {% endblocktrans %}
-    </p>
-    <p>
-      <a class="btn btn-primary btn-md disabled"
-         href="{% url 'storage:expand' %}" role="button">
-        {% trans "Expand Root Partition" %}</a>
-    </p>
   {% endif %}
+
+  <h3>{%trans "Advanced" %} </h3>
+  <p>
+    {% blocktrans trimmed %}
+      Advanced storage operations such as disk partitioning and RAID management
+      are provided by the <a href="/_cockpit/storage">Cockpit</a> app.
+    {% endblocktrans %}
+  </p>
 
 {% endblock %}

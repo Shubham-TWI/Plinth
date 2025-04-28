@@ -1,93 +1,108 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure PageKite."""
 
-"""
-Plinth module to configure PageKite
-"""
+from django.utils.translation import gettext_lazy as _
 
-from django.utils.translation import ugettext_lazy as _
-
-from . import utils
-from plinth import cfg
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, menu
+from plinth.daemon import Daemon
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.names.components import DomainType
+from plinth.package import Packages
+from plinth.privileged import service as service_privileged
 from plinth.utils import format_lazy
 
+from . import manifest, utils
 
-version = 1
-
-depends = ['names']
-
-managed_packages = ['pagekite']
-
-first_boot_steps = [
-    {
-        'id': 'pagekite_firstboot',
-        'url': 'pagekite:firstboot',
-        'order': 5,
-    },
-]
-
-name = _('PageKite')
-
-short_description = _('Public Visibility')
-
-description = [
+_description = [
     format_lazy(
         _('PageKite is a system for exposing {box_name} services when '
           'you don\'t have a direct connection to the Internet. You only '
           'need this if your {box_name} services are unreachable from '
           'the rest of the Internet. This includes the following '
           'situations:'), box_name=_(cfg.box_name)),
-
-    format_lazy(
-        _('{box_name} is behind a restricted firewall.'),
-        box_name=_(cfg.box_name)),
-
+    format_lazy(_('{box_name} is behind a restricted firewall.'),
+                box_name=_(cfg.box_name)),
     format_lazy(
         _('{box_name} is connected to a (wireless) router which you '
           'don\'t control.'), box_name=_(cfg.box_name)),
-
     _('Your ISP does not provide you an external IP address and '
       'instead provides Internet connection through NAT.'),
-
     _('Your ISP does not provide you a static IP address and your IP '
-      'address changes evertime you connect to Internet.'),
-
+      'address changes every time you connect to Internet.'),
     _('Your ISP limits incoming connections.'),
-
     format_lazy(
-        _('PageKite works around NAT, firewalls and IP-address limitations '
+        _('PageKite works around NAT, firewalls and IP address limitations '
           'by using a combination of tunnels and reverse proxies. You can '
           'use any pagekite service provider, for example '
-          '<a href="https://pagekite.net">pagekite.net</a>.  In future it '
+          '<a href="https://pagekite.net">pagekite.net</a>.  In the future it '
           'might be possible to use your buddy\'s {box_name} for this.'),
         box_name=_(cfg.box_name))
 ]
 
 
-def init():
-    """Intialize the PageKite module"""
-    menu = main_menu.get('system')
-    menu.add_urlname(name, 'glyphicon-flag', 'pagekite:index', short_description)
+class PagekiteApp(app_module.App):
+    """FreedomBox app for Pagekite."""
 
-    # Register kite name with Name Services module.
-    utils.update_names_module(initial_registration=True)
+    app_id = 'pagekite'
 
+    DAEMON = 'pagekite'
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
+    _version = 2
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(
+            app_id=self.app_id, version=self._version, depends=['names'],
+            name=_('PageKite'), icon='fa-flag',
+            short_description=_('Public Visibility'), description=_description,
+            manual_page='PageKite',
+            donation_url='https://pagekite.net/support/faq/#donate')
+        self.add(info)
+
+        menu_item = menu.Menu('menu-pagekite', info.name,
+                              info.short_description, info.icon,
+                              'pagekite:index',
+                              parent_url_name='system:visibility', order=40)
+        self.add(menu_item)
+
+        packages = Packages('packages-pagekite', ['pagekite'])
+        self.add(packages)
+
+        domain_type = DomainType('domain-type-pagekite', _('PageKite Domain'),
+                                 'pagekite:index', can_have_certificate=True)
+        self.add(domain_type)
+
+        daemon = Daemon('daemon-pagekite', self.DAEMON)
+        self.add(daemon)
+
+        backup_restore = BackupRestore('backup-restore-pagekite',
+                                       **manifest.backup)
+        self.add(backup_restore)
+
+    def post_init(self):
+        """Perform post initialization operations."""
+        # Register kite name with Name Services module.
+        if not self.needs_setup() and self.is_enabled():
+            utils.update_names_module(is_enabled=True)
+
+    def enable(self):
+        """Send domain signals after enabling the app."""
+        super().enable()
+        utils.update_names_module(is_enabled=True)
+
+    def disable(self):
+        """Send domain signals before disabling the app."""
+        utils.update_names_module(is_enabled=False)
+        super().disable()
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        if not old_version:
+            self.enable()
+
+        if old_version == 1:
+            service_privileged.try_restart(PagekiteApp.DAEMON)

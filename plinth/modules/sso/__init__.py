@@ -1,41 +1,43 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-"""
-Plinth module to configure Single Sign On services.
-"""
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure Single Sign On services."""
 
-from plinth import actions
-from django.utils.translation import ugettext_lazy as _
+from django.utils.translation import gettext_lazy as _
 
-version = 1
+from plinth import app as app_module
+from plinth.config import DropinConfigs
+from plinth.package import Packages
 
-is_essential = True
-
-depends = ['security', 'apache']
-
-name = _('Single Sign On')
-
-managed_packages = [
-    'libapache2-mod-auth-pubtkt', 'openssl', 'python3-openssl', 'flite',
-]
+from . import privileged
 
 
-def setup(helper, old_version=None):
-    """Install the required packages"""
-    helper.install(managed_packages)
-    actions.superuser_run('auth-pubtkt', ['enable-mod'])
-    actions.superuser_run('auth-pubtkt', ['create-key-pair'])
+class SSOApp(app_module.App):
+    """FreedomBox app for single sign on."""
+
+    app_id = 'sso'
+
+    _version = 2
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True,
+                               depends=['security',
+                                        'apache'], name=_('Single Sign On'))
+        self.add(info)
+
+        packages = Packages('packages-sso', [
+            'libapache2-mod-auth-pubtkt', 'openssl', 'python3-openssl', 'flite'
+        ])
+        self.add(packages)
+
+        dropin_configs = DropinConfigs('dropin-configs-sso', [
+            '/etc/apache2/includes/freedombox-single-sign-on.conf',
+        ])
+        self.add(dropin_configs)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.create_key_pair()

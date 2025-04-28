@@ -1,47 +1,25 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""FreedomBox app to configure Syncthing."""
 
-"""
-Plinth module to configure Syncthing.
-"""
+from django.utils.translation import gettext_lazy as _
 
-from django.utils.translation import ugettext_lazy as _
-
-from plinth import actions
-from plinth import action_utils
-from plinth import cfg
-from plinth import frontpage
-from plinth import service as service_module
-from plinth.menu import main_menu
+from plinth import app as app_module
+from plinth import cfg, frontpage, menu
+from plinth.config import DropinConfigs
+from plinth.daemon import Daemon
+from plinth.modules.apache.components import Webserver
+from plinth.modules.backups.components import BackupRestore
+from plinth.modules.firewall.components import (Firewall,
+                                                FirewallLocalProtection)
+from plinth.modules.users import add_user_to_share_group
+from plinth.modules.users import privileged as users_privileged
+from plinth.modules.users.components import UsersAndGroups
+from plinth.package import Packages
 from plinth.utils import format_lazy
-from .manifest import clients
 
+from . import manifest, privileged
 
-version = 1
-
-managed_services = ['syncthing']
-
-managed_packages = ['syncthing']
-
-name = _('Syncthing')
-
-short_description = _('File Synchronization')
-
-description = [
+_description = [
     _('Syncthing is an application to synchronize files across multiple '
       'devices, e.g. your desktop computer and mobile phone.  Creation, '
       'modification, or deletion of files on one device will be automatically '
@@ -53,94 +31,126 @@ description = [
           'instance of Syncthing that may be used by multiple users.  Each '
           'user\'s set of devices may be synchronized with a distinct set of '
           'folders.  The web interface on {box_name} is only available for '
-          'users belonging to the "admin" group.'), box_name=_(cfg.box_name)),
-    _('When enabled, Syncthing\'s web interface will be available from '
-      '<a href="/syncthing/">/syncthing</a>.  Desktop and mobile clients are '
-      'also <a href="https://syncthing.net/">available</a>.'),
+          'users belonging to the "admin" or "syncthing-access" group.'),
+        box_name=_(cfg.box_name)),
 ]
 
-clients = clients
-
-service = None
+SYSTEM_USER = 'syncthing'
 
 
-def init():
-    """Intialize the module."""
-    menu = main_menu.get('apps')
-    menu.add_urlname(name, 'glyphicon-refresh',
-                     'syncthing:index', short_description)
+class SyncthingApp(app_module.App):
+    """FreedomBox app for Syncthing."""
 
-    global service
-    setup_helper = globals()['setup_helper']
-    if setup_helper.get_state() != 'needs-setup':
-        service = service_module.Service(
-            managed_services[0],
-            name,
-            ports=['http', 'https'],
-            is_external=True,
-            is_enabled=is_enabled,
-            enable=enable,
-            disable=disable,
-            is_running=is_running)
+    app_id = 'syncthing'
 
-        if is_enabled():
-            add_shortcut()
+    _version = 7
 
+    DAEMON = 'syncthing@syncthing'
 
-def setup(helper, old_version=None):
-    """Install and configure the module."""
-    helper.install(managed_packages)
-    helper.call('post', actions.superuser_run, 'syncthing', ['enable'])
-    global service
-    if service is None:
-        service = service_module.Service(
-            managed_services[0],
-            name,
-            ports=['http', 'https'],
-            is_external=True,
-            is_enabled=is_enabled,
-            enable=enable,
-            disable=disable,
-            is_running=is_running)
-    helper.call('post', service.notify_enabled, None, True)
-    helper.call('post', add_shortcut)
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
 
+        self.groups = {
+            'syncthing-access': _('Administer Syncthing application')
+        }
 
-def add_shortcut():
-    """Helper method to add a shortcut to the frontpage."""
-    frontpage.add_shortcut(
-        'syncthing', name, short_description=short_description, url='/syncthing/', login_required=True)
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               name=_('Syncthing'), icon_filename='syncthing',
+                               short_description=_('File Synchronization'),
+                               description=_description,
+                               manual_page='Syncthing',
+                               clients=manifest.clients,
+                               donation_url='https://syncthing.net/donations/')
+        self.add(info)
 
+        menu_item = menu.Menu('menu-syncthing', info.name,
+                              info.short_description, info.icon_filename,
+                              'syncthing:index', parent_url_name='apps')
+        self.add(menu_item)
 
-def is_running():
-    """Return whether the service is running."""
-    return action_utils.service_is_running('syncthing@syncthing')
+        shortcut = frontpage.Shortcut('shortcut-syncthing', info.name,
+                                      short_description=info.short_description,
+                                      icon=info.icon_filename,
+                                      url='/syncthing/', clients=info.clients,
+                                      login_required=True,
+                                      allowed_groups=list(self.groups))
+        self.add(shortcut)
 
+        packages = Packages('packages-syncthing', ['syncthing'])
+        self.add(packages)
 
-def is_enabled():
-    """Return whether the module is enabled."""
-    return (action_utils.service_is_enabled('syncthing@syncthing') and
-            action_utils.webserver_is_enabled('syncthing-plinth'))
+        dropin_configs = DropinConfigs('dropin-configs-syncthing', [
+            '/etc/apache2/conf-available/syncthing-plinth.conf',
+        ])
+        self.add(dropin_configs)
 
+        firewall = Firewall('firewall-syncthing-web', info.name,
+                            ports=['http', 'https'], is_external=True)
+        self.add(firewall)
 
-def enable():
-    """Enable the module."""
-    actions.superuser_run('syncthing', ['enable'])
-    add_shortcut()
+        firewall = Firewall('firewall-syncthing-ports', info.name,
+                            ports=['syncthing'], is_external=True)
+        self.add(firewall)
 
+        firewall_local_protection = FirewallLocalProtection(
+            'firewall-local-protection-syncthing', ['8384'])
+        self.add(firewall_local_protection)
 
-def disable():
-    """Enable the module."""
-    actions.superuser_run('syncthing', ['disable'])
-    frontpage.remove_shortcut('syncthing')
+        webserver = Webserver('webserver-syncthing', 'syncthing-plinth',
+                              urls=['https://{host}/syncthing/'])
+        self.add(webserver)
 
+        daemon = Daemon('daemon-syncthing', self.DAEMON)
+        self.add(daemon)
 
-def diagnose():
-    """Run diagnostics and return the results."""
-    results = []
+        users_and_groups = UsersAndGroups('users-and-groups-syncthing',
+                                          [SYSTEM_USER], self.groups)
+        self.add(users_and_groups)
 
-    results.extend(
-        action_utils.diagnose_url_on_all(
-            'https://{host}/syncthing/', check_certificate=False))
+        backup_restore = BackupRestore('backup-restore-syncthing',
+                                       **manifest.backup)
+        self.add(backup_restore)
 
-    return results
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        privileged.setup()
+        add_user_to_share_group(SYSTEM_USER, SyncthingApp.DAEMON)
+
+        if not old_version:
+            self.enable()
+
+        privileged.setup_config()
+
+        if old_version == 1 and self.is_enabled():
+            self.get_component('firewall-syncthing-ports').enable()
+
+        if old_version and old_version <= 3:
+            # rename LDAP and Django group
+            old_groupname = 'syncthing'
+            new_groupname = 'syncthing-access'
+
+            users_privileged.rename_group(old_groupname, new_groupname)
+
+            from django.contrib.auth.models import Group
+            Group.objects.filter(name=old_groupname).update(name=new_groupname)
+
+            # update web shares to have new group name
+            from plinth.modules import sharing
+            shares = sharing.list_shares()
+            for share in shares:
+                if old_groupname in share['groups']:
+                    new_groups = share['groups']
+                    new_groups.remove(old_groupname)
+                    new_groups.append(new_groupname)
+
+                    name = share['name']
+                    sharing.remove_share(name)
+                    sharing.add_share(name, share['path'], new_groups,
+                                      share['is_public'])
+
+    def uninstall(self):
+        """De-configure and uninstall the app."""
+        super().uninstall()
+        privileged.uninstall()

@@ -1,32 +1,17 @@
-#
-# This file is part of Plinth.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""
+FreedomBox app for first boot wizard.
+"""
 
-"""
-Plinth module for first boot wizard
-"""
+import operator
+import os
+import sys
 
 from django.urls import reverse
-import operator
 
-from plinth import module_loader
-
-version = 1
-
-is_essential = True
+from plinth import app as app_module
+from plinth import cfg
+from plinth.signals import post_setup
 
 first_boot_steps = [
     {
@@ -45,6 +30,37 @@ first_boot_steps = [
 _all_first_boot_steps = None
 
 _is_completed = None
+
+
+class FirstBootApp(app_module.App):
+    """FreedomBox app for First Boot."""
+
+    app_id = 'first_boot'
+
+    _version = 1
+
+    def __init__(self) -> None:
+        """Create components for the app."""
+        super().__init__()
+
+        info = app_module.Info(app_id=self.app_id, version=self._version,
+                               is_essential=True)
+        self.add(info)
+
+    def post_init(self):
+        """Perform post initialization operations."""
+        post_setup.connect(_clear_first_boot_steps)
+
+    def setup(self, old_version):
+        """Install and configure the app."""
+        super().setup(old_version)
+        self.enable()
+
+
+def _clear_first_boot_steps(sender, module_name, **kwargs):
+    """Flush the cache of first boot steps so it is recreated."""
+    global _all_first_boot_steps
+    _all_first_boot_steps = None
 
 
 def is_firstboot_url(path):
@@ -67,11 +83,11 @@ def _get_steps():
         return _all_first_boot_steps
 
     steps = []
-    modules = module_loader.loaded_modules
-    for module_object in modules.values():
-        if getattr(module_object, 'first_boot_steps', None):
-            if module_object.setup_helper.get_state() != 'needs-setup':
-                steps.extend(module_object.first_boot_steps)
+    for app in app_module.App.list():
+        module = sys.modules[app.__module__]
+        if getattr(module, 'first_boot_steps', None):
+            if not app.needs_setup():
+                steps.extend(module.first_boot_steps)
 
     _all_first_boot_steps = sorted(steps, key=operator.itemgetter('order'))
     return _all_first_boot_steps
@@ -128,3 +144,14 @@ def set_completed():
     global _is_completed
     _is_completed = True
     kvstore.set('firstboot_completed', 1)
+
+
+def get_secret_file_path():
+    """Returns the path to the first boot wizard secret file."""
+    return os.path.join(cfg.data_dir, 'firstboot-wizard-secret')
+
+
+def firstboot_wizard_secret_exists():
+    """Return whether a firstboot wizard secret exists."""
+    secret_file = get_secret_file_path()
+    return os.path.exists(secret_file) and os.path.getsize(secret_file) > 0
